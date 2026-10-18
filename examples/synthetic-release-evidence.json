@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "evidence_type": "task_release",
+  "project_id": "SYNTHETIC-DEMO",
+  "task_id": "DEMO-PREFLIGHT-001",
+  "task_type": "preflight",
+  "release_id": "DEMO-RELEASE-001",
+  "status": "OFFLINE_DEMO_ONLY",
+  "synthetic": true,
+  "authority": "SYNTHETIC_FIXTURE_NOT_AUTHORITY",
+  "approved_at_utc": "2026-09-23T00:00:00Z",
+  "expires_at_utc": "2099-01-01T00:00:00Z",
+  "query_manifest_sha256": "1c27335778b595b7ebcdbc24aac97a99f056d17fb3c09f3f66043bfa7c189fbb",
+  "execution_control_sha256": "42d63d43e9bbf6881e742e991c9c5df82d72c80a0498ec3cadbdfdd37be060fc"
+}

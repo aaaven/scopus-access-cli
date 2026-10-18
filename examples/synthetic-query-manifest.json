@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "project_id": "SYNTHETIC-DEMO",
+  "task_id": "DEMO-PREFLIGHT-001",
+  "task_type": "preflight",
+  "release_id": "DEMO-RELEASE-001",
+  "classification": "SYNTHETIC_OFFLINE_FIXTURE",
+  "queries": {
+    "scopus_search": {
+      "query": "SYNTHETIC_PLACEHOLDER_DO_NOT_EXECUTE"
+    }
+  }
+}

@@ -1,0 +1,140 @@
+"""Process acceptance against a wheel installed outside the source checkout.
+
+Set SCOPUS_TEST_INSTALLED_PYTHON to an isolated installation's Python. Every
+console execution uses installed_cli_harness.py to mock credentials/transport
+and enforce socket guards in that child before importing the package.
+"""
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+class InstalledCliTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        value = os.environ.get("SCOPUS_TEST_INSTALLED_PYTHON")
+        if not value:
+            raise unittest.SkipTest("requires an offline-installed wheel environment")
+        cls.python = Path(value).absolute()
+        cls.bin = Path(os.environ.get("SCOPUS_TEST_INSTALLED_BIN", str(cls.python.parent)))
+        cls.harness = Path(__file__).with_name("installed_cli_harness.py")
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name).resolve()
+        self.root = self.base / "survey"
+        self.root.mkdir()
+
+    def invoke(self, cwd, *arguments, entry="scopus-access", local=True, environment=None):
+        env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.defpath,
+                   PYTHONDONTWRITEBYTECODE="1", SCOPUS_TEST_LOCAL_ONLY="1" if local else "0")
+        if environment:
+            env.update(environment)
+        # A deliberately unusable PYTHONPATH proves -I doesn't borrow source.
+        env["PYTHONPATH"] = str(self.base / "missing-source")
+        result = subprocess.run([str(self.python), "-I", str(self.harness), entry] + list(arguments),
+                                cwd=str(cwd), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=30, check=False)
+        for content in (result.stdout, result.stderr):
+            self.assertNotIn(b"SYNTHETIC_INSTALLED_CLI_CREDENTIAL", content)
+            self.assertNotIn(b"SYNTHETIC_INSTALLED_QUERY", content)
+        rows = [json.loads(line) for line in result.stdout.decode().splitlines()]
+        return result.returncode, rows
+
+    def initialize(self, root=None):
+        code, rows = self.invoke(root or self.root, "init")
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]["quota_state"], "UNVERIFIED")
+        self.assertEqual(rows[0]["network_calls"], 0)
+        return rows[0]
+
+    def query(self):
+        path = self.root / "restricted_metadata/query.txt"
+        path.write_text("SYNTHETIC_INSTALLED_QUERY")
+        return path
+
+    def test_installed_console_outside_source_root_and_three_subdirectories_share_state(self):
+        first = self.initialize()
+        query = self.query()
+        child = self.root / "a/b/c"
+        child.mkdir(parents=True)
+        for directory in (self.root, self.root / "a", child):
+            code, rows = self.invoke(directory, "search", "--query-file", str(query))
+            self.assertEqual(code, 0, rows)
+            self.assertEqual(rows[0]["database_path"], first["database_path"])
+            info = json.loads(Path(rows[0]["run_info_path"]).read_text())
+            self.assertEqual(info["project_id"], first["project_id"])
+            self.assertEqual(info["project_output_dir"], first["output_dir"])
+        self.assertFalse((self.bin.parent / ".scopus-access").exists())
+        self.assertFalse((self.bin.parent / "restricted_metadata").exists())
+
+    def test_installed_end_to_end_check_status_export_and_repeat_init_preserve_history(self):
+        self.initialize()
+        query = self.query()
+        code, rows = self.invoke(self.root, "check", "--query-file", str(query), "--execute-live", local=False)
+        self.assertEqual(code, 0, rows)
+        run_info = rows[0]["run_info_path"]
+        for command in ("status", "export"):
+            code, rows = self.invoke(self.root, command, "--run-info", run_info)
+            self.assertEqual(code, 0, rows)
+        code, rows = self.invoke(self.root, "usage")
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]["requests_attempted"], 1)
+        code, rows = self.invoke(self.root, "init")
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]["quota_state"], "NORMAL")
+        code, rows = self.invoke(self.root, "usage")
+        self.assertEqual(rows[0]["requests_attempted"], 1)
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(b"SYNTHETIC_INSTALLED_CLI_CREDENTIAL", path.read_bytes())
+
+    def test_installed_missing_and_corrupt_nearer_config_never_borrow_credentials(self):
+        self.initialize()
+        query = self.query()
+        other = self.base / "uninitialized"
+        other.mkdir()
+        user = self.base / "mock-user"
+        default = user / ".config/scopus-access/policy.json"
+        default.parent.mkdir(parents=True)
+        default.write_bytes((self.root / ".scopus-access/policy.json").read_bytes())
+        env = {"SCOPUS_ACCESS_POLICY": str(self.root / ".scopus-access/policy.json"),
+               "SCOPUS_TEST_USER_DIRECTORY": str(user)}
+        for entry, arguments in (("scopus-access", ["search", "--query-file", str(query)]),
+                                 ("scopus-fetch", [str(query)])):
+            code, rows = self.invoke(other, *arguments, entry=entry, environment=env)
+            self.assertEqual(code, 2, rows)
+            self.assertEqual(rows[-1]["code"], "PROJECT_NOT_INITIALIZED")
+            self.assertIn("init", rows[-1]["message"])
+        child = self.root / "nested"
+        control = child / ".scopus-access"
+        control.mkdir(parents=True)
+        for value in (None, b"{broken", b"{}"):
+            policy = control / "policy.json"
+            if value is not None:
+                policy.write_bytes(value)
+            code, rows = self.invoke(child, "search", "--query-file", str(query), environment=env)
+            self.assertEqual(code, 2, rows)
+        self.assertFalse(list((self.root / ".scopus-access/runs").iterdir()))
+
+    def test_installed_same_names_repeat_and_rename_preserve_distinct_folder_identity(self):
+        first = self.initialize()
+        second = self.base / "second/survey"
+        second.mkdir(parents=True)
+        other = self.initialize(second)
+        self.assertNotEqual(first["project_id"], other["project_id"])
+        self.assertNotEqual(first["key_alias"], other["key_alias"])
+        renamed = self.base / "renamed"
+        self.root.rename(renamed)
+        after = self.initialize(renamed)
+        self.assertEqual(after["project_id"], first["project_id"])
+        self.assertEqual(after["key_alias"], first["key_alias"])
+        self.assertFalse(after["credential_written"])
+
+
+if __name__ == "__main__":
+    unittest.main()

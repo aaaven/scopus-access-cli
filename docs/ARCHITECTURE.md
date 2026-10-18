@@ -1,0 +1,140 @@
+# Scopus Access Tool：通用本地 CLI 架构
+
+更新：2026-10-18。当前实现为 0.3.1。初始化、工程识别、共享本机状态及
+check/search/execute/status/export/resume/usage 已接通并完成离线验证。实际用法见
+[USAGE.md](USAGE.md)，测试记录见 [VALIDATION.md](VALIDATION.md)。
+
+## 产品范围
+
+交付一个通过 Python wheel 安装的本地 CLI。每个本机账户只维护一个活动工具环境
+~/.local/share/scopus-access/current，~/.local/bin 中的固定命令已加入 PATH。
+安装器从本地 wheel 离线创建并验证版本环境，再切换 current；升级不发现或修改
+任何工程文件。源码位置与运行时数据无关。任何使用者都可配置自己的 Scopus API
+key；终端、脚本和 Codex 调用相同命令。维护者不提供公共 key、不代管使用者
+凭据、不维护中央服务。API、view 和字段的实际可用性由使用者的访问权限决定。
+
+只负责调用方给定的查询或标识符、有界检索、额度计数、恢复和本地导出。
+研究主题、corpus 建立、筛选、科学去重和文献计量分析由调用工程处理。
+
+明确不做：Codex skill、plugin、SRC/PI 通知及反馈、人员身份和组织审批流程、
+多 Mac 调用、远程结果取回、SSH/SFTP、HTTP/MCP 服务及中央任务队列。
+新工程使用本地显式执行授权，旧配置与历史证据保留兼容。
+
+## 配置绑定实际工程文件夹
+
+一个实际工程对应一个固定凭据引用和一份本机状态。Codex 对话、侧栏项目和每次
+运行不是新的配额账户。同一工程的所有本机调用方共享配置、数据库和结果。
+
+工程配置为 `.scopus-access/policy.json`。从当前目录逐级向上查找最近的配置；
+遇到不完整或不安全的较近工程就停止，不跳过它借用上一级的凭据。
+统一 search 找不到工程配置就报错，除非明确选择一个已有的 legacy policy。
+显式 policy 也不能覆盖当前工程的已初始化绑定。
+
+所有入口删除环境变量、用户级和源码目录的隐式回退；没有工程就提示初始化。
+旧配置通过显式 --policy 使用，不能绕过当前工程绑定；底层 live 命令同样检查。
+
+工程文件夹名称只用于展示。UUID 生成的项目 ID、alias、Keychain label 独立于
+名称；同名工程得到不同 ID，原文件夹改名保留 ID。配置还绑定目录设备/inode，
+复制到另一个实际文件夹不会被当成可以独立花费同一额度的新工程。
+
+```text
+survey-project/
+  .scopus-access/
+    policy.json           非秘密配置，含生成的 project_binding
+    control.sqlite        本工程的用量与恢复状态
+    runs/                 每次运行的控制文件
+  restricted_metadata/
+    scopus/               查询、原始响应、记录导出、checkpoint
+```
+
+初始化自动补充 Git 忽略规则。key 本身不写工程文件、命令行、环境变量、临时
+文件、日志、异常或报表。工程配置包含凭据引用，不包含凭据值。
+
+## 初始化流程
+
+在 survey 工程的交互终端执行 `scopus-access init`，不需要初始化 sh 脚本。
+
+1. 查找最近工程，以本机文件锁串行协调初始化。
+2. 新工程生成一次稳定 ID、alias、label，先保存非秘密 pending 配置。
+3. 建立工程的 SQLite 状态和受限数据目录，不插入任何假定额度。
+4. 在不回显提示中输入 key；通过 Apple Security.framework 的 SecItemAdd
+   直接写入 Keychain，不启动携带 key 的子进程。
+5. 追加项目与 alias 关联，原子发布 ready 配置。额度保持 UNVERIFIED。
+
+重复 init 复用 ready 配置，不重新提示、不读取或覆盖 key，也不重置数据库。
+中断后沿用 pending 配置的编号；若 Keychain 写入已经完成，仅查询项目条目
+元数据，避免二次覆盖。既有数据库丢失会报错，不自动新建一份余额。
+明确更新 key 的命令尚未实现；重复初始化不会执行更新。
+
+新工程使用通用 service `Scopus Access Tool`。旧工程的 service
+`UAEU Survey Research Access Layer` 及 alias（包括 `uaeu-scopus-preflight`）
+保持原样，不自动转换。旧名称是兼容标识，不是使用者必须隶属 UAEU 的要求。
+
+Apple 系统接口参考：[SecItemAdd](https://developer.apple.com/documentation/security/secitemadd(_:_:))。
+当前平台依赖 macOS Keychain 和 POSIX 文件锁；Windows 凭据与锁适配未实现。
+
+## 请求与共享状态
+
+保留现有 SQLite 原子预留、尝试计数、分页、受限输出及恢复内核。
+多个本机调用方通过同一数据库与请求锁协调，不各自复制余额。
+`BEGIN IMMEDIATE` 原子预留所有所需 API；请求发送前记尝试，发送后追加结果。
+证据记录只追加。输出限定在允许的 restricted_metadata 内并拒绝路径逃逸。
+stdout 为有界控制 JSONL，不输出查询或文献正文。
+
+状态记录用于避免重复花费、覆盖结果和误判已发送请求；使用者无需手工维护。
+未来自动生成的 USAGE.md 是可读派生报表，可离线重建，不作为可手改的余额来源。
+该自动报表尚未实现，不在初始化生成目录中冒充已有文件。
+
+额度初始 UNVERIFIED；只有真实响应才建立观测。Search 与 Abstract Retrieval
+分别计数。默认预览不读 key、不联网，真正发送需对明确查询/标识符及请求上限
+给出执行指令。初始化成功或配置存在本身不创造执行权限。
+
+新工程的 policy 允许明确的本地操作；每次执行仍需 --execute-live，并固定查询、
+页数、输出、数据库和有效期。该配置不是组织许可证明，也不单独构成执行指令。
+canonical 工程 policy 的 hash 被封入内存执行许可，发送前再次读取核验；凭据引用、
+工程目录身份或 policy 改变时停止。原内核的 topology_* 许可字段名保留兼容，新工程
+在这些字段中固定实际工程 policy，不生成虚构的 license/topology 文件。
+
+check 是显式单请求路径：STANDARD、count=1、零重试。UNVERIFIED、重置待核验或
+遥测不明时使用受限的 preflight 准入；已有观测额度时走正常预留。普通 search 不
+自动发探测请求。失败或无有效配额头时保留实际状态，不假定成功或重置余额。
+
+预览固定查询包、参数和控制 hash。execute 追加明确批准的后继控制文件，保留原预览；
+任务 ID、查询 hash 和请求预算不变，已准入 release 不能重跑消费。resume 必须复用
+原 reservation 和已核验分页位置，不扩展预算；默认只读状态，显式执行才可能联网。
+status/export/usage 全离线。其他已绑定工程不能使用本工程的 run-info。
+
+原始响应与 checkpoint 仍由受限 artifact store 校验保存。新额度事件是本机记录，
+不创建通知待办。SQLite 旧 SRC/PI 列名和旧处置方法为历史读取及兼容保留，没有
+新的 CLI 审批或外部通知入口。旧部署继续使用原配置检查，不改变既有执行证据。
+
+## 接口与范围
+
+```sh
+scopus-access init
+scopus-access check --query-file /absolute/path/to/query.txt
+scopus-access search --query-file /absolute/path/to/query.txt --max-requests 2 --page-size 25
+scopus-access execute --run-info /absolute/path/to/preview/run-info.json --execute-live
+scopus-access status --run-info /absolute/path/to/execution/run-info.json
+scopus-access export --run-info /absolute/path/to/execution/run-info.json
+scopus-access resume --run-info /absolute/path/to/execution/run-info.json --execute-live
+scopus-access usage
+```
+
+| 功能 | 当前情况 |
+|---|---|
+| 初始化、工程识别、共享状态 | 已实现，含两个进程并发验证 |
+| 通用本地准入、单请求检查 | 已实现；真实 API 验收另行记录 |
+| STANDARD Search、分页、JSON/JSONL | 已接通；明确请求上限、零重试 |
+| 统一状态、导出、恢复、用量 | 已实现；恢复不扩展原预算 |
+| 明确更新 key、自动 USAGE.md | 尚未实现 |
+| SRC/PI、人员审批、通知 | 不在新工程工作流中；旧 schema/方法保留兼容 |
+| Abstract Retrieval、其他 view/cursor | 底层有离线覆盖，简化入口未开放 |
+| CSV/RIS/BibTeX | 尚未实现 |
+
+文件夹改名保持工程 ID，但旧运行中固定的绝对路径不会自动迁移。
+
+开发与测试全离线，注入模拟凭据存储和 transport，任何 socket 尝试均失败。
+初始化测试覆盖同名工程、重复与中断初始化、文件夹改名、并发和秘密不泄露；
+不读取或写入真实 Keychain，不发送实网请求。迁移保留既有证据与结果，不重写
+历史或搬动数据库后声称原执行许可仍有效。

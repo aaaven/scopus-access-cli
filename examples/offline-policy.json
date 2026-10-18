@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "project_output_roots": {
+    "SYNTHETIC-DEMO": [
+      "/private/tmp/infra-scopus-demo-project/restricted_metadata"
+    ]
+  },
+  "project_api_key_aliases": {
+    "SYNTHETIC-DEMO": {
+      "scopus_search": "synthetic-demo-alias"
+    }
+  },
+  "live_capability_enabled": false,
+  "ai_session_grants": {},
+  "max_preflight_requests": 1
+}
