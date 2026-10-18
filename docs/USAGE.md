@@ -25,8 +25,15 @@ scopus-access usage
 
 ## 2. 初始化和 Keychain
 
-`init` 必须在可交互终端执行。提示输入时不回显，通过 Apple Security.framework
-直接写入 Keychain，不通过带 key 的子进程、argv、环境变量或临时文件中转。
+在交互终端运行 `init` 时，直接提示输入。在 GPT/自动化的无交互终端环境中，仍运行
+同一个 `scopus-access init`；工具自动打开 macOS Terminal 并等待结果。使用者只在
+新窗口粘贴 API key 后按回车，不必复制 shell 命令；Ctrl-C 可取消。首次 macOS 可能
+要求允许调用方控制 Terminal。没有可用的桌面会话或权限被拒绝时，明确失败并停止。
+
+输入不回显，通过 Apple Security.framework 直接写入 Keychain，不通过带 key 的
+子进程、argv、环境变量或临时文件中转。GPT 收到的仍是原有初始化 JSON 字段，不包含
+key。终端子进程只执行初始化，不能执行查询；进程间只交换有界的非秘密完成状态。
+受保护的完成文件位于本工程忽略的控制目录，正常结束后删除；不存输入正文。
 macOS 可能要求允许系统凭据访问；这与远端 Scopus 权限是两件事。
 
 初始化不读取远端额度，不消耗 API 请求。初始配额显示 `UNVERIFIED`。
@@ -34,6 +41,13 @@ macOS 可能要求允许系统凭据访问；这与远端 Scopus 权限是两件
 取消或中断后可以重跑；若 key 已成功写入，重试只查条目元数据，避免再次覆盖。
 
 当前没有换 key 命令。不要通过删除配置、数据库或重新 init 绕过已有记录。
+
+自动弹窗最多等待 5 分钟；取消、终端关闭或等待超时均不增加额度，原绑定保留。
+若窗口仍开着，可先完成或关闭，再由 GPT 重跑 init；已完成的配置会直接复用。
+同一工程同时初始化只允许一个等待中的 Terminal 窗口，其他调用返回
+`TERMINAL_INIT_IN_PROGRESS`。已有 ready 绑定，或中断后已存在对应 key 的情况不弹窗，
+不重写 key。成功 JSON 仍区分 initialized/reused，UNVERIFIED 仍表示尚未向 API 验证。
+
 若配置/数据库缺失或复制了工程目录，应停止操作并恢复原状态；工具不会重建一份假余额。
 目录改名保留项目 ID，但旧运行中固定的绝对路径不会自动迁移。
 
@@ -259,3 +273,36 @@ null 表示已有未能可靠判定发送状态的尝试。原分页的请求计
 读取默认等待 10 秒（保留原 Python 接口的 timeout_seconds）。系统调用无法被强制
 中断：超时后不会发送请求或自动重试，后台晚到的密钥会立即清零丢弃。
 这个限制不会被伪装成“用户拒绝”或系统返回的超时状态码。
+
+
+## 12. 由 GPT 打开 Terminal 执行或恢复
+
+需要 macOS 桌面中的钥匙串授权交互时，GPT 可以直接运行下面的 CLI 入口，
+不必让使用者复制 shell 命令。先按前面的步骤预览并取得对具体查询和请求边界的批准。
+
+```sh
+# 执行已批准的冻结预览；输出新的 execution run-info
+scopus-access execute --run-info /path/to/preview/run-info.json --execute-live --terminal
+
+# 原任务曾因读取 key 失败且未发送请求：继续使用原 execution run-info
+scopus-access resume --run-info /path/to/execution/run-info.json --execute-live --terminal
+```
+
+这些命令由调用方执行，使用者只需处理可能出现的 macOS 钥匙串授权窗口。
+已有 key 不需要再次粘贴。CLI 打开 Terminal、等待完成，并将经过验证的控制事件
+（状态、计数、错误码）返回原调用方；查询、文献内容和 key 不进入交接文件或输出。
+结果仍在原工程，`status` 和 `export` 仍可本地使用。
+
+`--terminal` 是显式的交互方式选择，不会在权限错误后自动启用。调用方仍须有权限
+打开 Terminal，并可能需要 macOS 自动化授权。它不能修复 GPT 宿主的自动审批服务
+不可用、403 或执行拒绝；此时保留原任务，先恢复调用方的执行权限。
+
+`execute` 先保存并返回新的执行引用，再打开窗口；`resume` 完整沿用原查询、授权、
+预约和预算，不重新准入、不延长授权、不增加请求。专用 preflight 恢复仍要求
+secret_unavailable、零尝试、零页和无原始响应，保持一次请求、一条记录、零重试。
+普通检索仍使用现有恢复内核。没有 `--execute-live` 就拒绝打开执行窗口。
+
+最长等待五分钟。若窗口仍运行、交接丢失或调用中断，返回明确终端错误，
+`network_calls`/`secret_reads` 为 null、`execution_counts_status=unknown`；
+这不表示请求未发送。GPT 应读取原运行状态和已有结果，不能自动重发或重新建任务。
+同一运行的并发 Terminal 交接有进程锁，实际请求仍受原数据库事务和恢复锁保护。

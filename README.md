@@ -1,7 +1,7 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.3.3**。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.3.4**。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
 工具不负责选题、corpus 建立、筛选、科学去重或文献计量分析。
@@ -28,7 +28,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.3.3-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.3.4-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help
@@ -58,8 +58,12 @@ cd /path/to/my-survey
 scopus-access init
 ```
 
-按不回显的提示输入 key。初始化不联网，额度为 `UNVERIFIED`，尚不表示 key 已验证。
-重复执行 `init` 会复用已有绑定，不覆盖 key、不清空账本。
+按不回显的提示输入 key。由 GPT/脚本在没有交互终端的环境调用时，`init` 会自动打开
+macOS Terminal；你只需在新窗口粘贴 key 并回车，无须复制 shell 命令。完成状态会返回
+原调用方，key 不会返回 GPT。首次可能需要允许 macOS 控制 Terminal。
+
+初始化不联网，额度为 `UNVERIFIED`，尚不表示 key 已验证。重复执行 `init` 会复用
+已有绑定，不覆盖 key、不清空账本，也不再次打开输入窗口。
 
 用编辑器在工程的 `restricted_metadata/query.txt` 中保存 UTF-8 Scopus 查询，可正常多行排版。
 可使用自己确认过的 `DOI(...)` 或 `TITLE-ABS-KEY(...)` 表达式；工具原样发送，不替换查询。
@@ -97,6 +101,12 @@ CLI stdout 是有界 JSONL 控制流，包含状态、请求计数、hash 和文
 ```sh
 scopus-access execute --run-info /path/to/preview/run-info.json --execute-live
 ```
+
+由 GPT 调用而需要本机钥匙串授权窗口时，可在上述 `execute` 命令末尾加 `--terminal`。
+GPT 直接打开 Terminal 并接收结果，使用者无需复制命令。原任务恢复也支持
+`resume --run-info ... --execute-live --terminal`，沿用原预约和预算。
+这仍要求调用方获准打开 Terminal，不能绕过宿主的执行拒绝或修复审批服务不可用。
+详见 [Terminal 执行与恢复](docs/USAGE.md#12-由-gpt-打开-terminal-执行或恢复)。
 
 执行输出的是一份**新的 execution run-info**。后续操作使用新文件：
 

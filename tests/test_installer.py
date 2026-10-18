@@ -1,5 +1,7 @@
 """Fixed tool installation and upgrades never discover consuming project data."""
 import json
+import gc
+import hashlib
 import os
 import tempfile
 import unittest
@@ -60,14 +62,20 @@ class InstallerTests(unittest.TestCase):
         writer = mock.Mock()
         initialize_project(project, writer=writer, prompt=lambda: SecretValue(b"SYNTHETIC_INSTALL_TEST_KEY"))
         (project / "restricted_metadata/scopus/local-fixture.txt").write_text("synthetic retained data")
-        before = {str(p.relative_to(project)): p.read_bytes() for p in project.rglob("*") if p.is_file()}
+        # Settle delayed sqlite connection finalizers before the byte snapshot;
+        # Python 3.12 can otherwise checkpoint initialization's WAL mid-test.
+        gc.collect()
+        before = {str(p.relative_to(project)): hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in project.rglob("*") if p.is_file()}
         with mock.patch.object(Path, "cwd", return_value=project), \
                 mock.patch("scopus_access.project.discover_project_policy",
                            side_effect=AssertionError("installer must not discover a project")):
             self.install("0.3.0")
             result = self.install("0.3.1")
         self.assertEqual(result["status"], "upgraded")
-        after = {str(p.relative_to(project)): p.read_bytes() for p in project.rglob("*") if p.is_file()}
+        gc.collect()
+        after = {str(p.relative_to(project)): hashlib.sha256(p.read_bytes()).hexdigest()
+                 for p in project.rglob("*") if p.is_file()}
         self.assertEqual(before, after)
         self.assertFalse(result["project_state_changed"])
         self.assertEqual(writer.add_api_key.call_count, 1)

@@ -48,6 +48,8 @@ with ExitStack() as stack:
             assert os.environ.get("SCOPUS_TEST_LOCAL_ONLY") != "1", "unexpected credential provider"
 
         def get_api_key(self, alias):
+            if os.environ.get("SCOPUS_TEST_TERMINAL_RUN"):
+                assert sys.stdin.isatty(), "credential read must happen in Terminal child"
             if os.environ.get("SCOPUS_TEST_PROVIDER_ERROR") == "1":
                 raise secrets.SecretProviderError(reason="interaction_not_allowed", stage="credential_read",
                                                   backend="macos_security_framework", system_error_code=-25308)
@@ -74,7 +76,34 @@ with ExitStack() as stack:
             }, body=json.dumps(body).encode())
 
     stack.enter_context(mock.patch.object(secrets, "MacOSKeychainWriter", Writer))
-    stack.enter_context(mock.patch.object(secrets, "prompt_api_key", lambda: secrets.SecretValue(secret)))
+    handoff_mode = os.environ.get("SCOPUS_TEST_TERMINAL_HANDOFF")
+    def prompt():
+        if handoff_mode and not sys.stdin.isatty():
+            raise secrets.SecretProviderError(reason="interaction_not_allowed", stage="credential_prompt", backend="terminal_input")
+        if handoff_mode == "cancel":
+            raise secrets.SecretProviderError(reason="access_denied", stage="credential_prompt", backend="terminal_input")
+        return secrets.SecretValue(secret)
+    stack.enter_context(mock.patch.object(secrets, "prompt_api_key", prompt))
+    if handoff_mode:
+        import shlex
+        from scopus_access import terminal_init
+        stack.enter_context(mock.patch.object(Writer, "contains_api_key", lambda self, alias: False))
+        def open_mock_terminal(command):
+            if os.environ.get("SCOPUS_TEST_TERMINAL_COUNTER"):
+                with open(os.environ["SCOPUS_TEST_TERMINAL_COUNTER"], "ab") as stream:
+                    stream.write(b"opened\n")
+            with mock.patch.object(sys.stdin, "isatty", return_value=True):
+                terminal_init.child_main(shlex.split(command)[-4:])
+        stack.enter_context(mock.patch.object(terminal_init, "_launch", open_mock_terminal))
+
+    if os.environ.get("SCOPUS_TEST_TERMINAL_RUN"):
+        import shlex
+        from scopus_access import terminal_run
+        def run_mock_terminal(command):
+            with mock.patch.object(sys.stdin, "isatty", return_value=True):
+                terminal_run.child_main(shlex.split(command)[-6:])
+        stack.enter_context(mock.patch.object(terminal_run, "_launch", run_mock_terminal))
+
     stack.enter_context(mock.patch.object(cli, "MacOSKeychainSecretProvider", Provider))
     stack.enter_context(mock.patch.object(cli, "UrllibTransport", Transport))
     if os.environ.get("SCOPUS_TEST_USER_DIRECTORY"):

@@ -49,7 +49,13 @@ from .terminal import emit_human
 
 def _cmd_init(args: argparse.Namespace) -> int:
     from .project import initialize_project
-    summary = initialize_project()
+    try:
+        summary = initialize_project()
+    except SecretProviderError as error:
+        from .terminal_init import needs_terminal, initialize_in_terminal
+        if not needs_terminal(error):
+            raise
+        summary = initialize_in_terminal()
     status = summary.pop("status")
     _write_control(sys.stdout, _result("init", status, **summary,
                                       network_calls=0, secret_reads=0))
@@ -81,6 +87,9 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
 
 def _cmd_continue(args: argparse.Namespace) -> int:
+    if getattr(args, "terminal", False):
+        from .terminal_run import run_in_terminal
+        return run_in_terminal(args)
     from .fetch import main as fetch_main
     action = {"status": "--status", "export": "--export-records",
               "resume": "--resume", "execute": "--execute-prepared"}[args.command]
@@ -673,6 +682,8 @@ def _cmd_resume(args: argparse.Namespace) -> int:
                 or args.run_id is not None or args.api_name is not None or args.db is not None):
             raise ValidationError("Resume uses the original run info and request bounds.")
         return _cmd_continue(args)
+    if getattr(args, "terminal", False):
+        raise ValidationError("Terminal resume requires the original run info file.")
     if any(value is None for value in (args.manifest, args.policy, args.run_id, args.api_name)):
         raise ValidationError("Resume requires a run info file or complete legacy arguments.")
     _, manifest, _, authorization, artifacts, ledger = _live_context(
@@ -800,6 +811,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--run-info", required=True)
         if name == "execute":
             command.add_argument("--execute-live", action="store_true")
+            command.add_argument("--terminal", action="store_true", help="open Terminal for this explicitly approved pinned execution")
         command.set_defaults(handler=_cmd_continue)
 
     doctor = subparsers.add_parser("doctor", help="check local control-plane readiness")
@@ -851,6 +863,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--run-id", help="optional bounded parent run identifier")
     resume = subparsers.add_parser("resume", help="continue one existing API retrieval reservation")
     resume.add_argument("--run-info", help="original run info; no replacement query or budget")
+    resume.add_argument("--terminal", action="store_true", help="resume original run in visible macOS Terminal")
     status = subparsers.add_parser("run-status", help="inspect existing run control counters")
     export = subparsers.add_parser("export-records", help="rebuild restricted records locally")
     for command in (run, resume, status, export):

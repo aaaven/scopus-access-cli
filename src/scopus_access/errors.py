@@ -79,6 +79,7 @@ PROVIDER_REASONS = frozenset({
 PROVIDER_BACKENDS = frozenset({"macos_security_framework", "terminal_input", "unknown"})
 FAILURE_STAGES = frozenset({
     "project_discovery", "project_configuration", "local_storage", "local_publish",
+    "terminal_launch", "terminal_initialization", "terminal_execution",
     "credential_prompt", "credential_metadata", "credential_write", "credential_read",
     "credential_decode", "keychain_backend",
 })

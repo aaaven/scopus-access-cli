@@ -58,6 +58,57 @@ class InstalledCliTests(unittest.TestCase):
         path.write_text("SYNTHETIC_INSTALLED_QUERY")
         return path
 
+    def test_installed_agent_init_handoff_returns_result_without_key_or_shell_copy(self):
+        counter = self.base / "terminal-windows"
+        environment = {"SCOPUS_TEST_TERMINAL_HANDOFF": "success", "SCOPUS_TEST_TERMINAL_COUNTER": str(counter)}
+        code, rows = self.invoke(self.root, "init", environment=environment)
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]["status"], "initialized")
+        self.assertTrue(rows[0]["credential_written"])
+        self.assertEqual(rows[0]["quota_state"], "UNVERIFIED")
+        self.assertEqual((rows[0]["network_calls"], rows[0]["secret_reads"]), (0, 0))
+        code, reused = self.invoke(self.root, "init", environment=environment)
+        self.assertEqual((code, reused[0]["status"]), (0, "reused"))
+        self.assertEqual(counter.read_bytes(), b"opened\n")
+        self.assertEqual(rows[0]["project_id"], reused[0]["project_id"])
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(b"SYNTHETIC_INSTALLED_CLI_CREDENTIAL", path.read_bytes())
+
+    def test_installed_agent_cancel_preserves_binding_and_can_retry_handoff(self):
+        code, rows = self.invoke(self.root, "init", environment={"SCOPUS_TEST_TERMINAL_HANDOFF": "cancel"})
+        self.assertEqual((code, rows[0]["provider_reason"]), (4, "access_denied"))
+        binding = json.loads((self.root / ".scopus-access/policy.json").read_text())["project_binding"]
+        self.assertEqual(binding["state"], "pending")
+        code, rows = self.invoke(self.root, "init", environment={"SCOPUS_TEST_TERMINAL_HANDOFF": "success"})
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]["project_id"], binding["project_id"])
+        self.assertEqual(rows[0]["quota_state"], "UNVERIFIED")
+
+    def test_installed_terminal_execute_and_unused_preflight_resume_keep_original_budget(self):
+        self.initialize()
+        query = self.query()
+        code, rows = self.invoke(self.root, "check", "--query-file", str(query))
+        self.assertEqual(code, 0, rows)
+        preview = rows[0]["run_info_path"]
+        code, rows = self.invoke(self.root, "execute", "--run-info", preview, "--execute-live", "--terminal",
+                                 local=False, environment={"SCOPUS_TEST_TERMINAL_RUN": "1", "SCOPUS_TEST_PROVIDER_ERROR": "1"})
+        self.assertEqual(code, 6, rows)
+        run_info = rows[0]["run_info_path"]
+        original = Path(run_info).read_bytes()
+        self.assertEqual(rows[-1]["requests_attempted"], 0)
+        code, rows = self.invoke(self.root, "resume", "--run-info", run_info, "--execute-live", "--terminal",
+                                 local=False, environment={"SCOPUS_TEST_TERMINAL_RUN": "1"})
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[-1]["requests_attempted"], 1)
+        self.assertEqual(Path(run_info).read_bytes(), original)
+        code, rows = self.invoke(self.root, "resume", "--run-info", run_info, "--execute-live", "--terminal",
+                                 environment={"SCOPUS_TEST_TERMINAL_RUN": "1"})
+        self.assertEqual(code, 2, rows)
+        self.assertEqual(rows[-1]["code"], "PREFLIGHT_RESUME_DENIED")
+        code, rows = self.invoke(self.root, "usage")
+        self.assertEqual((code, rows[0]["requests_attempted"]), (0, 1))
+
     def test_installed_console_outside_source_root_and_three_subdirectories_share_state(self):
         first = self.initialize()
         query = self.query()

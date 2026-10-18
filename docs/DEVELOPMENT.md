@@ -35,7 +35,7 @@ python3 -m venv .venv-build
 validation_root="$(mktemp -d)"
 python3 -m venv "$validation_root/tool"
 "$validation_root/tool/bin/python" -m pip install --no-index --no-deps --no-cache-dir \
-  "$PWD/dist/uaeu_scopus_access_layer-0.3.3-py3-none-any.whl"
+  "$PWD/dist/uaeu_scopus_access_layer-0.3.4-py3-none-any.whl"
 export SCOPUS_TEST_INSTALLED_PYTHON="$validation_root/tool/bin/python"
 export SCOPUS_TEST_INSTALLED_BIN="$validation_root/tool/bin"
 

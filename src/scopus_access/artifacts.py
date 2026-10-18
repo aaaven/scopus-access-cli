@@ -660,7 +660,14 @@ class RestrictedArtifactStore:
         run = _safe_id(run_id, "run_id")
         with self._parent_fd(Path("locks") / (run + ".resume.lock"), create=True) as (parent, name):
             flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-            descriptor = os.open(name, flags, 0o600, dir_fd=parent)
+            # Two macOS callers creating the same lock with bare O_CREAT
+            # can observe ENOENT during lookup. Publish once with O_EXCL;
+            # a competing caller opens the persistent existing lock instead.
+            # Never unlink it: every caller must lock the same inode.
+            try:
+                descriptor = os.open(name, flags | os.O_EXCL, 0o600, dir_fd=parent)
+            except FileExistsError:
+                descriptor = os.open(name, flags & ~os.O_CREAT, 0o600, dir_fd=parent)
             try:
                 self._require_regular(descriptor)
                 os.fchmod(descriptor, 0o600)

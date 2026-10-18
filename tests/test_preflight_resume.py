@@ -2,6 +2,7 @@
 import dataclasses
 import hashlib
 import json
+import os
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -206,3 +207,47 @@ class PreflightResumeTests(unittest.TestCase):
             build_preflight_resume_authorization(ledger=self.ledger, manifest=manifest,
                 authorization=dataclasses.replace(permit, query_manifest_sha256='0'*64), artifacts=self.store,
                 run_id=self.info['parent_run_id'], api_name='scopus_search')
+
+
+    def test_resume_lock_exclusively_creates_then_reuses_same_inode(self):
+        self.fail_before_send()
+        real_open = os.open
+        calls = []
+        def opened(path, flags, *args, **kwargs):
+            if str(path).endswith('.resume.lock'): calls.append(flags)
+            return real_open(path, flags, *args, **kwargs)
+        with mock.patch('scopus_access.artifacts.os.open', side_effect=opened):
+            with self.store.resume_lock(self.execution_id): pass
+            lock = self.store.root / 'locks' / (self.execution_id + '.resume.lock')
+            inode = lock.stat().st_ino
+            with self.store.resume_lock(self.execution_id): pass
+        self.assertEqual(lock.stat().st_ino, inode)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(calls[0] & os.O_EXCL)
+        self.assertTrue(calls[1] & os.O_EXCL)
+        self.assertFalse(calls[2] & os.O_CREAT)
+        self.assertFalse(self.wire.urls)
+
+    def test_resume_lock_symlink_and_missing_existing_lock_fail_before_send(self):
+        self.fail_before_send()
+        locks = self.store.root / 'locks'
+        locks.mkdir(exist_ok=True)
+        outside = self.root / 'outside-lock'
+        outside.write_bytes(b'synthetic retained file')
+        lock = locks / (self.execution_id + '.resume.lock')
+        lock.symlink_to(outside)
+        code, rows = self.resume(local=True)
+        self.assertNotEqual(code, 0, rows)
+        self.assertEqual(outside.read_bytes(), b'synthetic retained file')
+        lock.unlink()
+        real_open = os.open
+        def missing(path, flags, *args, **kwargs):
+            if str(path).endswith('.resume.lock'):
+                if flags & os.O_EXCL: raise FileExistsError()
+                raise FileNotFoundError()
+            return real_open(path, flags, *args, **kwargs)
+        with mock.patch('scopus_access.artifacts.os.open', side_effect=missing):
+            code, rows = self.resume(local=True)
+        self.assertNotEqual(code, 0, rows)
+        self.assertFalse(self.wire.urls)
+        self.assertFalse(self.ledger.rows('request_usage'))

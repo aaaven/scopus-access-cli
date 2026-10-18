@@ -1,6 +1,6 @@
 # Scopus Access Tool：通用本地 CLI 架构
 
-更新：2026-10-19。当前实现为 0.3.3。初始化、工程识别、共享本机状态及
+更新：2026-10-19。当前实现为 0.3.4。初始化、工程识别、共享本机状态及
 check/search/execute/status/export/resume/usage 已接通并完成离线验证。实际用法见
 [USAGE.md](USAGE.md)，测试记录见 [VALIDATION.md](VALIDATION.md)。
 
@@ -154,3 +154,30 @@ scopus-access usage
 初始化测试覆盖同名工程、重复与中断初始化、文件夹改名、并发和秘密不泄露；
 不读取或写入真实 Keychain，不发送实网请求。迁移保留既有证据与结果，不重写
 历史或搬动数据库后声称原执行许可仍有效。
+
+## Noninteractive initialization
+
+When hidden input is required and the caller has no TTY on macOS, init releases
+its normal initialization lock and opens Terminal with the same package's fixed
+initialization child. A separate per-project lock permits one pending window.
+The child takes the existing initialization lock, validates the original folder
+and project identity, prompts without echo, and writes directly to Keychain.
+Only a bounded non-secret status packet crosses back; the parent verifies the
+ready binding and returns the usual init JSON. No network or new live authority
+is involved. Cancelled, timed-out, or interrupted setup retains its binding for
+safe retry; ready projects bypass the handoff.
+
+
+## Explicit Terminal execution
+
+execute/resume accept --terminal together with --execute-live and the original
+run-info. This is an explicit local UI handoff, not an automatic fallback after
+permission denial. The parent validates pinned context; execute publishes its
+execution reference before launch, while resume reuses its original reference.
+The same package's child validates the run-info digest and physical working
+folder, then invokes the existing task-specific admission or recovery kernel.
+A separate per-source lock prevents competing windows. Only schema-validated,
+identity-matched control events and sanitized failure diagnostics return through
+a bounded local packet. Missing completion reports unknown activity and never
+causes a retry. Host execution approval and macOS automation permissions remain
+necessary; no policy or sandbox bypass is implemented.

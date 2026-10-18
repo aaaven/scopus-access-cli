@@ -1,3 +1,3 @@
 """Governed, offline-first Scopus access control layer."""
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"

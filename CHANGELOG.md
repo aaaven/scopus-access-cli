@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.4 — 2026-10-19
+
+- Let an agent run the usual init command without asking the user to copy a
+  shell command. A missing interactive input terminal opens macOS Terminal,
+  accepts the hidden key there, and returns the original initialization JSON.
+- Keep credentials in the interactive child and native Keychain. Exchange only
+  bounded non-secret completion metadata; no credential argv, environment,
+  temporary files, agent output, or API requests.
+- Preserve ready/pending bindings, cancellation and retry safety. Serialize
+  per-project handoffs to prevent duplicate windows; bound waiting to five
+  minutes and report launch, timeout, and in-progress failures safely.
+
+- Add explicit execute/resume --terminal for already bounded, approved work.
+  Return validated control events to the caller; keep preflight recovery on its
+  original reservation and grant. Never enable this as an automatic permission
+  fallback, retry a send, or report unknown IPC activity as zero requests.
+- Stabilize upgrade-preservation test snapshots after SQLite finalization on
+  Python 3.12 and compare file digests to avoid expensive binary error diffs.
+
+- Open recovery locks by exclusive creation or reuse of their persistent inode;
+  avoid a macOS concurrent O_CREAT lookup failure without retrying any request.
+
 ## 0.3.3 — 2026-10-19
 
 - Dispatch resume by the original validated task type. A dedicated minimal

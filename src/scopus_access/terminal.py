@@ -10,6 +10,7 @@ _STEPS = {
     "credential_prompt": "隐藏输入", "credential_metadata": "钥匙串条目检查",
     "credential_write": "钥匙串保存", "credential_read": "钥匙串读取",
     "credential_decode": "钥匙串数据检查", "keychain_backend": "钥匙串后端加载",
+    "terminal_launch": "打开交互终端", "terminal_initialization": "终端初始化", "terminal_execution": "终端执行",
 }
 _REMEDIES = {
     "credential_not_found": "检查钥匙串是否有当前工程对应的条目；不要借用其他工程配置。",
@@ -54,6 +55,10 @@ def human_message(record):
         activity = "未发出网络请求。" if sent is False else "请求活动请查看原运行记录。"
         return "%s失败：%s%s。%s%s" % (step, reason if reason in _REMEDIES else "keychain_error", suffix, explanation, activity)
     if status in {"error", "locked"}:
+        if str(record.get("code", "")).startswith("TERMINAL_"):
+            if command != "init":
+                return "终端任务尚未完成：请检查原任务状态和已打开的窗口；请求活动可能未知，不会自动重发或增加预算。"
+            return "终端初始化尚未完成：请检查已打开的 Terminal 窗口及 macOS 自动化授权；完成或关闭后可重试 init。凭据和账本未被重置，未联网。"
         if record.get("code") == "RELEASE_EXPIRED":
             return "原任务授权已过期；需要显式重新授权。resume 不会续期或增加额度，本次未发送请求。"
         if record.get("code") == "PREFLIGHT_RESUME_DENIED":
