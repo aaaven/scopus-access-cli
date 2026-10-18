@@ -1,6 +1,6 @@
 # Scopus Access Tool：通用本地 CLI 架构
 
-更新：2026-10-19。当前实现为 0.3.4。初始化、工程识别、共享本机状态及
+更新：2026-10-19。当前实现为 0.4.0。初始化、工程识别、共享本机状态及
 check/search/execute/status/export/resume/usage 已接通并完成离线验证。实际用法见
 [USAGE.md](USAGE.md)，测试记录见 [VALIDATION.md](VALIDATION.md)。
 
@@ -145,7 +145,7 @@ scopus-access usage
 | 统一状态、导出、恢复、用量 | 已实现；恢复不扩展原预算 |
 | 明确更新 key、自动 USAGE.md | 尚未实现 |
 | SRC/PI、人员审批、通知 | 不在新工程工作流中；旧 schema/方法保留兼容 |
-| Abstract Retrieval、其他 view/cursor | 底层有离线覆盖，简化入口未开放 |
+| Abstract Retrieval、COMPLETE/cursor | 显式 CLI 入口；离线验证，实际权限和多页仍待实网 |
 | CSV/RIS/BibTeX | 尚未实现 |
 
 文件夹改名保持工程 ID，但旧运行中固定的绝对路径不会自动迁移。
@@ -181,3 +181,17 @@ identity-matched control events and sanitized failure diagnostics return through
 a bounded local packet. Missing completion reports unknown activity and never
 causes a retry. Host execution approval and macOS automation permissions remain
 necessary; no policy or sandbox bypass is implemented.
+
+
+## 0.4.0 feedback implementation
+
+New control-only telemetry/service-error schemas keep whitelisted validation
+states, normalized quota numbers and response digests. No response header dump
+or free remote error string enters evidence. inspect reports original state and
+bounded diagnostic eligibility. start serializes evidence validation with first
+admission of an existing prepared execution, including delayed Terminal children.
+Search plans expose cursor, fixed sort and up to 1000 explicit requests, while
+retaining the separate offset ceiling. details exposes the existing frozen-ID
+retrieval kernel. audit verifies saved pages and reports field presence and
+technical coverage; it never certifies a stable scientific population, complete
+author lists or reference networks. Reference pagination is not implemented.

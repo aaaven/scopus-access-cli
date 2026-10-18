@@ -66,7 +66,7 @@ class QueryCliTests(unittest.TestCase):
         info = json.loads(Path(rows[0]['run_info_path']).read_text())
         task = json.loads(Path(info['manifest_path']).read_text())
         package = json.loads(Path(task['query_manifest_path']).read_text())
-        self.assertEqual(package['queries']['scopus_search'], search_operation(text))
+        self.assertEqual(package['queries']['scopus_search'], search_operation(text, {'schema_version':'1.0','sort':'-coverDate'}))
         code, rows = self.invoke('execute', '--run-info', rows[0]['run_info_path'], '--execute-live')
         self.assertEqual(code, 0, rows)
         self.assertEqual(parse_qs(urlsplit(self.wire.urls[0]).query)['query'], [text])

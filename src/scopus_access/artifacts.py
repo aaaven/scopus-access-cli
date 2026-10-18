@@ -620,7 +620,7 @@ class RestrictedArtifactStore:
 
     def write_search_package(
         self, *, project_id: str, task_id: str, release_id: str, query: str,
-        task_type: str = "survey_run",
+        task_type: str = "survey_run", parameters=None,
     ) -> Tuple[Path, str]:
         """Freeze a user-supplied Search operation inside restricted storage."""
 
@@ -630,7 +630,7 @@ class RestrictedArtifactStore:
         if task_type not in {"survey_run", "preflight"}:
             raise ArtifactError("search task type is invalid")
         from .query import search_operation
-        operation = search_operation(query)
+        operation = search_operation(query, parameters)
         raw = (json.dumps({
             "schema_version": "1.0", "project_id": project, "task_id": task,
             "task_type": task_type, "release_id": release,

@@ -80,7 +80,7 @@ class SimpleScriptTests(unittest.TestCase):
         self.assertEqual(sent.netloc, "api.elsevier.com")
         self.assertEqual(sent.path, "/content/search/scopus")
         self.assertEqual(parse_qs(sent.query), {
-            "query": [QUERY + "\n"], "view": ["STANDARD"], "count": ["200"], "start": ["0"],
+            "query": [QUERY + "\n"], "view": ["STANDARD"], "count": ["200"], "sort": ["-coverDate"], "start": ["0"],
         })
 
     def test_bounds_and_invalid_query_fail_before_secret_or_transport(self):

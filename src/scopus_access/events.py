@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any, Callable, Dict, Mapping, Optional, TextIO
 
+from .diagnostics import HEADER_REASONS, HEADER_STATES, SERVICE_CODES
 from .security import execution_run_id
 from .errors import PROVIDER_REASONS, PROVIDER_BACKENDS, FAILURE_STAGES
 
@@ -37,6 +38,8 @@ _COMMON_REQUIRED = {
 # These schemas are intentionally flat.  Flat scalar records make recursive
 # content smuggling and accidental serialization of response objects harder.
 _EVENT_REQUIRED = {
+    "quota_telemetry": {"attempt_id", "limit_status", "remaining_status", "reset_status", "telemetry_reason", "observed_epoch"},
+    "service_error": {"attempt_id", "http_status", "remote_error_code", "error_category", "error_parameter", "error_response_sha256"},
     "task_admitted": {
         "release_id",
         "reservation_id",
@@ -92,6 +95,8 @@ _EVENT_REQUIRED = {
 }
 
 _EVENT_OPTIONAL = {
+    "quota_telemetry": {"quota_limit", "quota_remaining", "quota_reset_epoch"},
+    "service_error": {"service_max_count"},
     "task_admitted": set(),
     "request_started": set(),
     "page_completed": {"http_status"},
@@ -116,6 +121,7 @@ _EVENT_OPTIONAL = {
     },
     "local_control_failed": set(),
     "run_completed": {
+        "result_set_status",
         "artifact_manifest_ref",
         "artifact_manifest_sha256",
     },
@@ -138,7 +144,7 @@ _FORBIDDEN_FIELD_TOKENS = {
     "token",
 }
 
-_INTEGER_FIELDS = {
+_INTEGER_FIELDS = {"observed_epoch", "service_max_count",
     "max_requests",
     "retry_allowance",
     "page_size",
@@ -155,7 +161,7 @@ _INTEGER_FIELDS = {
     "retries_used",
 }
 
-_HASH_FIELDS = {"response_sha256", "artifact_manifest_sha256"}
+_HASH_FIELDS = {"error_response_sha256","response_sha256", "artifact_manifest_sha256"}
 _REF_FIELDS = {
     "artifact_ref",
     "checkpoint_ref",
@@ -189,11 +195,16 @@ _HEADER_LIKE_RE = re.compile(
     r"(?i)(?:x-els-apikey|bearer\s+|authorization\s*:|cookie\s*:|api[_-]?key)"
 )
 _ENUM_FIELDS = {
+    "limit_status": HEADER_STATES, "remaining_status": HEADER_STATES, "reset_status": HEADER_STATES,
+    "telemetry_reason": HEADER_REASONS,
+    "error_category": {"unclassified", "query_syntax", "invalid_parameter", "access"},
+    "error_parameter": {"unclassified", "query", "count", "start", "view"},
+    "result_set_status": {"exhausted", "budget_exhausted", "unfinished"},
     "provider_reason": PROVIDER_REASONS,
     "failure_stage": FAILURE_STAGES,
     "provider_backend": PROVIDER_BACKENDS,
     "remote_error_code": {
-        "authentication_error", "authorization_error", "unclassified",
+        "unclassified", *SERVICE_CODES.values(),
     },
     "api_name": {"scopus_search", "abstract_retrieval"},
     "endpoint_class": {"search", "abstract_retrieval"},

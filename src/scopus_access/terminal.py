@@ -54,11 +54,21 @@ def human_message(record):
         sent = record.get("network_request_sent")
         activity = "未发出网络请求。" if sent is False else "请求活动请查看原运行记录。"
         return "%s失败：%s%s。%s%s" % (step, reason if reason in _REMEDIES else "keychain_error", suffix, explanation, activity)
+    if command == "inspect" and status == "ok":
+        return "已核对原任务：状态见 phase；诊断资格、剩余预算和允许的下一步见 next_actions。不需要重新初始化。"
+    if command == "audit" and status == "ok":
+        return "本地字段覆盖率与分页核查已完成；字段非空不代表权限或参考文献完整，详见 JSON 中的覆盖率和校验状态。"
+    if record.get("event") == "quota_telemetry" and record.get("telemetry_reason") not in {"RATE_LIMIT_HEADERS_VALID", "RATE_LIMIT_FIRST_SUCCESSFUL_DIAGNOSTIC"}:
+        return "配额遥测未通过：%s。已取得的数据保留；使用 inspect 检查原任务、诊断资格和剩余预算，不要重新 init。" % record.get("telemetry_reason")
+    if record.get("event") == "service_error":
+        return "服务端返回 HTTP %s：%s。未自动改写查询、切换 view 或重试；具体参数信息见控制记录。" % (_count(record.get("http_status")),record.get("remote_error_code","unclassified"))
     if status in {"error", "locked"}:
         if str(record.get("code", "")).startswith("TERMINAL_"):
             if command != "init":
                 return "终端任务尚未完成：请检查原任务状态和已打开的窗口；请求活动可能未知，不会自动重发或增加预算。"
             return "终端初始化尚未完成：请检查已打开的 Terminal 窗口及 macOS 自动化授权；完成或关闭后可重试 init。凭据和账本未被重置，未联网。"
+        if record.get("code") == "EXECUTION_ALREADY_STARTED":
+            return "原任务已有准入或请求证据，start 不会重复预约；请 inspect 后按原预算使用 resume。"
         if record.get("code") == "RELEASE_EXPIRED":
             return "原任务授权已过期；需要显式重新授权。resume 不会续期或增加额度，本次未发送请求。"
         if record.get("code") == "PREFLIGHT_RESUME_DENIED":

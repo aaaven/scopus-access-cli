@@ -57,6 +57,9 @@ def normalize_page(body: bytes, artifact: ArtifactRecord, api_name: str) -> List
             "abstract": _at(core, "dc:description"),
             "creator": _at(core, "dc:creator"),
             "authors": _at(entry, "author") if api_name == "scopus_search" else _at(entry, "authors", "author"),
+            "author_keywords": _at(entry,"authkeywords") or _at(entry,"author-keywords") or _at(entry,"item","bibrecord","head","citation-info","author-keywords","author-keyword"),
+            "index_keywords": _at(entry,"idxterms") or _at(entry,"item","bibrecord","head","enhancement","descriptorgroup"),
+            "references": _at(entry,"references","reference") or _at(entry,"item","bibrecord","tail","bibliography","reference"),
             "publication_name": _at(core, "prism:publicationName"),
             "cover_date": _at(core, "prism:coverDate"),
             "aggregation_type": _at(core, "prism:aggregationType"),
@@ -85,7 +88,7 @@ def normalize_page(body: bytes, artifact: ArtifactRecord, api_name: str) -> List
                 id_source = name
                 break
         result.append({
-            "schema_version": "1.0",
+            "schema_version": "1.0", "conversion_version": "2.0", "source_format": "scopus_api_json",
             "source": "Elsevier/Scopus",
             "api_name": api_name,
             "run_id": artifact.run_id,
@@ -102,3 +105,11 @@ def normalize_page(body: bytes, artifact: ArtifactRecord, api_name: str) -> List
             **fields,
         })
     return result
+
+
+def nonempty(value):
+    if value is None: return False
+    if isinstance(value,str): return bool(value.strip())
+    if isinstance(value,list): return any(nonempty(v) for v in value)
+    if isinstance(value,dict): return any(nonempty(v) for k,v in value.items() if not k.startswith('@'))
+    return isinstance(value,(int,float,bool))

@@ -1,7 +1,7 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.3.4**。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.4.0**。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
 工具不负责选题、corpus 建立、筛选、科学去重或文献计量分析。
@@ -12,7 +12,7 @@
 - key 在交互终端隐藏输入，直接写入 Apple Keychain；不使用 key 参数或环境变量。
 - 从当前目录向上寻找最近的工程配置，多个本机调用方共享同一工程状态。
 - 默认离线预览；只有明确添加 `--execute-live` 才允许本次有界请求联网。
-- 简化检索接口使用 Scopus Search **STANDARD**、offset 分页、零自动重试。
+- 检索入口支持显式 **STANDARD/COMPLETE**、offset/cursor 分页和固定排序，零自动重试。
 - 本地状态、用量及导出不读取 key、不联网。
 
 这是本地 CLI，不需要 Codex skill、服务器、组织身份流程或外部通知服务。
@@ -28,7 +28,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.3.4-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.4.0-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help
@@ -170,7 +170,7 @@ Keychain 读写统一使用 Security.framework。`SECRET_UNAVAILABLE` / `secret_
 | `usage` | 查看本工程派生用量视图 | 否 |
 | `install --wheel ...` | 离线安装/升级固定工具环境 | 否 |
 
-Search 默认 1 页、每页 200 条；允许 1–25 页、每页 1–200 条，上限 5,000 条。
+Search 默认 STANDARD、offset、1 请求、每页 200 条；允许显式 1–1000 请求。COMPLETE 每页最多 25 条，offset 的文档上限与 cursor 权限要求分别检查。
 达到明确边界会保存结果并报告部分完成，不自动按年份拆分或扩展预算。
 STANDARD 不保证摘要、完整作者、关键词或参考文献；导出保留实际字段与缺失值。
 
@@ -210,3 +210,19 @@ English: A local macOS CLI for exact Scopus queries, bounded retrieval, shared
 per-project quota state and local exports. Bring your own API key. Install once,
 initialize each project, preview first, and use `--execute-live` for explicit
 bounded execution. Runtime dependencies: Python standard library only.
+
+
+## 0.4.0：诊断、恢复及元数据能力
+
+- `inspect --run-info ...`：查看保存页数、实际请求、剩余预算、配额暂停原因、诊断是否已用及允许的下一步。
+- `start --run-info ... --execute-live`：继续原“已准备但未准入”的执行；复用冻结任务与授权，禁止重复准入。可显式加 `--terminal`。
+- `revise --run-info ... --page-size 25`：准备新的参数版本，保留原失败证据；默认离线，必须另外批准执行。
+- `search ... --pagination cursor --max-requests 100 --view COMPLETE --page-size 25 --sort=-coverDate`：显式选择有界分页与元数据 profile，权限不够时失败，不自动降级。
+- `details --identifiers-file ... --view META_ABS`：冻结受限 JSON 文件中的 Scopus ID，按每个 ID 一次请求准备详情任务。`--check` 限定一个 ID，零重试；FULL/REF 权限需单独验证。
+- `audit --run-info ...`：核查实际字段非空覆盖率、重复标识符、页边界和总量变化。预算耗尽标为未完成，不能当作结果集穷尽。
+- `capabilities --records 5039`：离线查看 profile、权限未知状态及请求成本估计。
+
+摘要、完整作者、作者关键词、索引关键词及参考文献分别计数。API 转换保留原始响应、
+转换版本及 `scopus_api_json` 来源标记，不冒充原生网页导出。参考文献分页与完整性仍未
+实现；切换 COMPLETE 或收到 FULL/REF 的部分内容均不代表参考文献网络完整。
+详见 [反馈落实与证据](docs/FEEDBACK-F01-F05.md)。

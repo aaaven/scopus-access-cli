@@ -24,6 +24,7 @@ from .artifacts import Checkpoint, RestrictedArtifactStore, RunReceipt
 from .events import ControlEventWriter, utc_now
 from .security import execution_run_id
 from .errors import secret_error_details
+from .diagnostics import quota_diagnostic, service_diagnostic, HEADER_REASONS
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:\-]{0,127}$")
@@ -393,6 +394,7 @@ class QuotaObservationResult:
 
     accepted: bool
     quota_state: str
+    reason_code: str = "RATE_LIMIT_HEADERS_VALID"
 
 
 class SecretProvider(Protocol):
@@ -516,25 +518,7 @@ class GovernedRunner:
     def _quota_headers(
         self, headers: Mapping[str, str]
     ) -> Optional[Tuple[int, int, int]]:
-        normalized = self._headers(headers)
-        names = (
-            "x-ratelimit-limit",
-            "x-ratelimit-remaining",
-            "x-ratelimit-reset",
-        )
-        if any(name not in normalized for name in names):
-            return None
-        try:
-            limit = int(normalized[names[0]])
-            remaining = int(normalized[names[1]])
-            reset_epoch = int(normalized[names[2]])
-        except (TypeError, ValueError):
-            return None
-        if limit <= 0 or remaining < 0 or remaining > limit:
-            return None
-        if reset_epoch <= int(self._epoch_clock()):
-            return None
-        return limit, remaining, reset_epoch
+        return quota_diagnostic(headers, self._epoch_clock())[1]
 
     def _retry_after(self, headers: Mapping[str, str]) -> int:
         value = self._headers(headers).get("retry-after", "1")
@@ -651,6 +635,8 @@ class GovernedRunner:
             "requests_attempted": receipt.requests_attempted,
             "retries_used": receipt.retries_used,
             "stop_reason": receipt.stop_reason,
+            "result_set_status": ("exhausted" if receipt.completeness == "complete" else
+                                  "budget_exhausted" if receipt.stop_reason == "request_boundary_reached" else "unfinished"),
             "checkpoint_ref": receipt.checkpoint_ref,
             "receipt_ref": receipt.receipt_ref,
         }
@@ -980,7 +966,16 @@ class GovernedRunner:
                         attempt_id=attempt_id,
                     )
 
-                quota = self._quota_headers(response.headers)
+                telemetry, quota = quota_diagnostic(response.headers, self._epoch_clock())
+                if not 200 <= response.status < 300:
+                    diagnostic = service_diagnostic(response.body)
+                    self._emit("service_error", auth, attempt_id=attempt_id, http_status=response.status, **diagnostic)
+                    self._artifacts._atomic_write(
+                        Path("diagnostics") / (attempt_id + ".json"),
+                        (json.dumps({"schema_version":"1.0", "attempt_id":attempt_id,
+                                     "http_status":response.status, **diagnostic},sort_keys=True)+"\n").encode())
+                # Preserve evidence for every response, including HTTP errors.
+                self._emit("quota_telemetry", auth, attempt_id=attempt_id, **telemetry)
                 normalized_headers = self._headers(response.headers)
                 els_status = normalized_headers.get("x-els-status", "").upper()
 
@@ -1202,6 +1197,7 @@ class GovernedRunner:
                         started_at_utc=started_at,
                         attempt_id=attempt_id,
                         http_status=response.status,
+                        remote_error_code=service_diagnostic(response.body)["remote_error_code"],
                     )
 
                 artifact = self._artifacts.write_response(
@@ -1277,11 +1273,17 @@ class GovernedRunner:
                         if isinstance(observation_result, QuotaObservationResult):
                             telemetry_valid = observation_result.accepted
                             quota_state = observation_result.quota_state
+                            if not telemetry_valid:
+                                reason = observation_result.reason_code
+                                telemetry["telemetry_reason"] = reason if reason in HEADER_REASONS and reason not in {"RATE_LIMIT_HEADERS_VALID","RATE_LIMIT_FIRST_SUCCESSFUL_DIAGNOSTIC"} else "RECONCILIATION_UNAVAILABLE"
+                                self._emit("quota_telemetry", auth, attempt_id=attempt_id, **telemetry)
                         else:
                             # Compatibility with simple injected offline fakes.
                             telemetry_valid = observation_result is not False
                     except BaseException:
                         telemetry_valid = False
+                        telemetry["telemetry_reason"] = "RECONCILIATION_UNAVAILABLE"
+                        self._emit("quota_telemetry", auth, attempt_id=attempt_id, **telemetry)
                     if telemetry_valid:
                         self._emit(
                             "quota_updated",

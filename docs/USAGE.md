@@ -107,7 +107,7 @@ scopus-access execute --run-info /path/to/search-preview/run-info.json --execute
 ```
 
 `--pages` 是 `--max-requests` 的兼容别名。简化 Search 使用 offset，从 start=0 开始。
-默认 1 请求、每页 200 条；请求上限 1–25，每页 1–200，最多 5,000 条。
+默认 STANDARD、offset、1 请求、每页 200 条；请求预算允许显式 1–1000。STANDARD 每页最多 200，COMPLETE 最多 25。超过 offset 范围须显式选择 cursor，权限和实际服务限制仍需验证。
 实际发送可能少于上限，例如结果已经耗尽或额度/存储检查要求停止。
 零自动重试、零重定向，不换 key、不切 endpoint、不改查询。
 
@@ -306,3 +306,73 @@ secret_unavailable、零尝试、零页和无原始响应，保持一次请求�
 `network_calls`/`secret_reads` 为 null、`execution_counts_status=unknown`；
 这不表示请求未发送。GPT 应读取原运行状态和已有结果，不能自动重发或重新建任务。
 同一运行的并发 Terminal 交接有进程锁，实际请求仍受原数据库事务和恢复锁保护。
+
+
+## 13. 遥测、错误、已准备任务恢复与字段覆盖率
+
+```sh
+# 全部为本地操作，不读取 key、不发送 API 请求
+scopus-access status --run-info /path/to/execution/run-info.json
+scopus-access inspect --run-info /path/to/execution/run-info.json
+scopus-access audit --run-info /path/to/execution/run-info.json
+scopus-access capabilities --records 5039
+```
+
+`quota_telemetry` 对 limit/remaining/reset 分别记录 valid/missing/invalid/stale/inconsistent，
+只保留允许字段的有效数字与校验结果，不保存完整 HTTP 头。`telemetry_reason` 还区分
+重置时间回退、同窗口额度变化或增加、提前换窗及无法确认的本地对账；客户端
+`observed_epoch` 可用于核对时钟。HTTP 200 数据先保存，遥测不可信时暂停，不认定耗尽。
+旧版本未记录字段状态的响应显示 telemetry=null，无法事后还原，不推断缺失原因。
+
+`inspect` 返回原 run-info、phase、request_budget、reserved_remaining、diagnostic_allowed、
+diagnostic_used、next_actions。诊断资格指一次有界诊断预约能否申请，已预约也算已用；
+这不是联网许可，执行仍需批准具体查询及边界。诊断未用时可另行批准一次 STANDARD、
+count=1 的 `check`；若诊断已用且仍未知，保留数据，检查遥测/时钟/权限或联系服务方。
+不要重新初始化、删除账本或不断创建任务。恢复条件满足后，`resume` 沿用原 checkpoint
+及剩余预约，不重发已保存页；预算耗尽不能用 resume 扩大。
+
+```sh
+# 原任务已准备但未准入：明确批准后由调用方继续同一任务
+scopus-access start --run-info /path/to/execution/run-info.json --execute-live
+```
+
+`start` 使用原冻结查询、参数、grant 和 run-info，不续期。它持有原执行的进程锁，
+核对数据库、请求日志、事件、checkpoint、receipt 和 raw 文件后才允许首次准入。
+已有准入或不明活动就拒绝，并要求 inspect/resume。Terminal 启动失败本身仍为未知；
+离线检查得到的 prepared_not_admitted 是本地时点证据，start 会在锁内重新检查。
+迟到的 Terminal 子进程也走同一 start，不会和公开调用重复预约或发送。
+这不绕过宿主执行拒绝。授权过期须重新明确授权，工具不会自动续期。
+
+HTTP 非成功响应的 `service_error` 支持 JSON/XML 错误 envelope，只输出白名单代码、
+固定类别、已识别参数及响应 SHA-256。自由文本（可能含查询/key/token）从不复制；
+安全摘要位于 restricted_metadata 下 diagnostics 目录。只有服务端完整匹配已识别的
+数字限制格式才报告 service_max_count，其他情况不猜允许值。失败请求照常计入用量。
+
+```sh
+# 另建离线参数版本，原任务和失败证据保持不变
+scopus-access revise --run-info /path/to/execution/run-info.json --page-size 25
+# 批准新预览后才 execute，新执行有独立明确预算
+```
+
+新 Search 包冻结排序（默认 -coverDate）和参数版本；多词排序参数使用
+`--sort=-coverDate,+creator` 形式，最多三个官方允许字段。更大检索可显式选择
+`--pagination cursor --max-requests 100 --view COMPLETE --page-size 25`。offset 的
+5,000 文档范围与 CLI 的 1,000 请求预算是两个限制，不能把它们解释为同一上限。
+不自动切换 cursor、拆年份或改写研究检索式。相同总量也不证明稳定快照或无遗漏。
+`audit` 逐页校验 raw 哈希，报告页序、offset、总量变化、缺失标识符及重复 occurrence；
+保留所有原始 occurrence，不做科学去重。observed_pages_consistent 仅指保存页的技术
+一致性；snapshot_stability_verified 始终为 false。真实多页能力仍须单独验收。
+
+```sh
+# 受限 JSON 文件示意为唯一 Scopus ID 列表；不要将研究数据放进工具源码
+scopus-access details --identifiers-file /path/to/project/restricted_metadata/ids.json --view META_ABS
+# 单记录权限检查的预览（执行仍需另行明确批准）
+scopus-access details --identifiers-file /path/to/project/restricted_metadata/one-id.json --view FULL --check
+```
+
+details 每个 ID 一次请求，最多 1,000 个，零自动重试；Abstract Retrieval 使用独立配额桶。
+初始权限/配额可用一个 ID 的 --check 明确测试，不能用 Search 额度替代详情额度。
+META_ABS、FULL、REF 所需权限不能由 STANDARD 成功推断。当前单记录预检的专用
+零发送恢复仅支持旧有 STANDARD Search；详情预检若在凭据读取前失败，应保留原证据，
+不能删除预约反复检查。字段覆盖率只计实际非空值；完整作者和参考文献完整性显示
+not_verified，不承诺 REF/FULL 默认页包含完整参考文献。完整参考分页尚未实现。

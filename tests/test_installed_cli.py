@@ -241,6 +241,39 @@ class InstalledCliTests(unittest.TestCase):
         self.assertEqual(code, 0, rows)
         self.assertEqual(rows[0]["records_count"], 1)
 
+    def test_two_installed_start_callers_reuse_prepared_terminal_failure_once(self):
+        self.initialize()
+        code,rows=self.invoke(self.root,"check","--query-file",str(self.query()))
+        self.assertEqual(code,0,rows)
+        code,rows=self.invoke(self.root,"execute","--run-info",rows[0]["run_info_path"],"--execute-live","--terminal",
+                              environment={"SCOPUS_TEST_TERMINAL_RUN":"fail_open"})
+        self.assertEqual(code,2,rows)
+        source=rows[0]["run_info_path"]
+        code,state=self.invoke(self.root,"status","--run-info",source)
+        self.assertEqual((code,state[0]["phase"]),(0,"prepared_not_admitted"))
+        counter=self.base/"start-counter"
+        env=dict(os.environ,PATH=str(self.bin)+os.pathsep+os.defpath,PYTHONDONTWRITEBYTECODE="1",
+                 SCOPUS_TEST_LOCAL_ONLY="0",SCOPUS_TEST_PROVIDER_ERROR="0",SCOPUS_TEST_WIRE_COUNTER=str(counter))
+        processes=[]
+        try:
+            for _ in range(2):
+                processes.append(subprocess.Popen([str(self.python),"-I",str(self.harness),"scopus-access","start",
+                                                   "--run-info",source,"--execute-live"],cwd=str(self.root),env=env,
+                                                   stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE))
+            codes=[]
+            for process in processes:
+                out,err=process.communicate(timeout=30)
+                self.assertNotIn(b"SYNTHETIC_INSTALLED_CLI_CREDENTIAL",out+err)
+                codes.append(process.returncode)
+            self.assertEqual(sorted(codes),[0,2])
+        finally:
+            for process in processes:
+                if process.poll() is None: process.kill();process.communicate()
+        self.assertEqual(counter.read_bytes(),b"sent\n")
+        code,rows=self.invoke(self.root,"inspect","--run-info",source)
+        self.assertEqual((code,rows[0]["requests_attempted"]),(0,1))
+        self.assertFalse(rows[0]["can_start"])
+
     def test_installed_same_names_repeat_and_rename_preserve_distinct_folder_identity(self):
         first = self.initialize()
         second = self.base / "second/survey"

@@ -43,7 +43,7 @@ from .policy import (
 from .quota import QuotaState, ReservationRequest, evaluate_candidate, utc_now
 from .runner import GovernedRunner, RunAuthorization
 from .secrets import MacOSKeychainSecretProvider
-from .security import execution_run_id, reject_symlink_components, safe_identifier
+from .security import execution_run_id, reject_symlink_components, safe_identifier, read_file_no_follow
 from .terminal import emit_human
 
 
@@ -77,8 +77,11 @@ def _cmd_search(args: argparse.Namespace) -> int:
     if policy is None:
         raise ValidationError("Run scopus-access init in this project first.",
                               code="PROJECT_NOT_INITIALIZED")
-    arguments = [args.query_file, "--policy", str(policy), "--pages", str(args.pages),
-                 "--page-size", str(args.page_size)]
+    arguments = [args.query_file, "--policy", str(policy), "--pages", str(args.pages)]
+    if args.page_size is not None: arguments.extend(["--page-size",str(args.page_size)])
+    for name in ("view","pagination","sort"):
+        value=getattr(args,name,None)
+        if value is not None: arguments.append("--"+name+"="+str(value))
     if args.command == "check":
         arguments.append("--check")
     if args.execute_live:
@@ -87,6 +90,11 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
 
 def _cmd_continue(args: argparse.Namespace) -> int:
+    if args.command == "status":
+        from .operations import inspect
+        fields = inspect(args.run_info)
+        _write_control(sys.stdout, _result("run-status", "prepared" if fields["can_start"] else "ok", **fields))
+        return 0
     if getattr(args, "terminal", False):
         from .terminal_run import run_in_terminal
         return run_in_terminal(args)
@@ -771,9 +779,76 @@ def _cmd_export_records(args: argparse.Namespace) -> int:
         release_id=manifest.release_id, api_name=args.api_name,
         records_ref=records.ref, records_sha256=records.sha256,
         records_count=records.record_count, records_pages=records.page_count,
+        result_set_exhausted=bool(store.load_checkpoint(run_id) and store.load_checkpoint(run_id).complete),
         network_calls=0, secret_reads=0,
     ))
     return EXIT_OK
+
+
+def _cmd_inspection(args):
+    if args.command=="inspect":
+        from .operations import inspect
+        fields=inspect(args.run_info)
+    else:
+        from .audit import audit
+        fields=audit(args.run_info)
+    _write_control(sys.stdout,_result(args.command,"ok",**fields))
+    return 0
+
+
+def _cmd_revise(args):
+    from .operations import context
+    from .manifest import load_verified_query_manifest
+    from .fetch import prepare, _write_run_info
+    import hashlib
+    info,policy,manifest,ledger,store,run=context(args.run_info)
+    if info["api_name"]!="scopus_search": raise ValidationError("Parameter revision currently requires a Search task.")
+    operation=load_verified_query_manifest(manifest)["queries"]["scopus_search"]
+    plan=manifest.requests[0]
+    frozen=argparse.Namespace(query_file=None,policy=info['policy_path'],pages=info['planned_requests'] if args.max_requests is None else args.max_requests,
+        page_size=args.page_size,view=plan.view,pagination=plan.pagination_mode,
+        sort=operation.get('parameters',{}).get('sort','-coverDate'),check=False,execute_live=False)
+    lineage={'schema_version':'1.0','predecessor_run_info_sha256':hashlib.sha256(read_file_no_follow(Path(args.run_info),max_bytes=16384)).hexdigest(),
+             'previous_page_size':plan.page_size,'new_page_size':args.page_size,
+             'previous_request_budget':info['planned_requests'],'new_request_budget':frozen.pages}
+    task,snapshot,database=prepare(frozen,query_text=operation['query'],predecessor=lineage)
+    path,new=_write_run_info(task,snapshot,database,execute_live=False)
+    _write_control(sys.stdout,_result('revise','previewed',run_info_path=str(path),query_package_sha256=new['query_package_sha256'],
+            planned_requests=new['planned_requests'],page_size=new['page_size'],view=plan.view,pagination_mode=plan.pagination_mode,
+            sort=frozen.sort,**lineage,network_calls=0,secret_reads=0))
+    return 0
+
+
+def _cmd_details(args):
+    from .fetch import prepare_details, _write_run_info
+    task,snapshot,database=prepare_details(args)
+    source,info=_write_run_info(task,snapshot,database,execute_live=args.execute_live)
+    _write_control(sys.stdout,_result('details','prepared' if args.execute_live else 'previewed',
+        run_info_path=str(source),planned_requests=info['planned_requests'],page_size=1,
+        api_name=info['api_name'],view=args.view,query_package_sha256=info['query_package_sha256'],
+        entitlement_status='unverified',network_calls=0,secret_reads=0))
+    if args.execute_live:
+        from .operations import start
+        return start(argparse.Namespace(run_info=str(source),execute_live=True,terminal=False))
+    return 0
+
+
+def _cmd_capabilities(args):
+    if not 0<=args.records<=200000: raise ValidationError('Use a bounded record forecast.')
+    fields={'profiles':{'STANDARD':{'max_page_size':200,'metadata':'basic','entitlement':'unverified'},
+                       'COMPLETE':{'max_page_size':25,'metadata':'expanded_search','entitlement':'unverified'}},
+            'detail_views':['META','META_ABS','FULL','REF'], 'detail_entitlement':'unverified',
+            'abstracts_require':'COMPLETE_or_per_record_verification',
+            'complete_authors_require':'per_record_field_and_pagination_verification',
+            'author_keywords_require':'COMPLETE_or_detail_field_verification',
+            'index_keywords_require':'detail_field_and_entitlement_verification',
+            'references_require':'REF_or_FULL_and_reference_pagination_verification',
+            'estimated_standard_requests':max(1,(args.records+199)//200),
+            'estimated_complete_requests':max(1,(args.records+24)//25),
+            'estimated_detail_requests':args.records,'references_may_require_additional_requests':True,
+            'web_export_equivalence':False,'network_calls':0,'secret_reads':0}
+    _write_control(sys.stdout,_result('capabilities','unverified',**fields))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -792,8 +867,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     search = subparsers.add_parser("search", help="preview or execute a bounded project search")
     search.add_argument("--query-file", required=True, help="UTF-8 file containing the exact query")
-    search.add_argument("--pages", "--max-requests", type=int, default=1, help="maximum requests, 1-25")
-    search.add_argument("--page-size", type=int, default=200)
+    search.add_argument("--pages", "--max-requests", type=int, default=1, help="maximum requests, 1-1000; offset and cursor limits are separate")
+    search.add_argument("--page-size", type=int, default=None)
+    search.add_argument("--view", choices=("STANDARD","COMPLETE"),default=None)
+    search.add_argument("--pagination",choices=("offset","cursor"),default=None)
+    search.add_argument("--sort",default=None)
     search.add_argument("--policy", help="explicit policy; must match any enclosing project binding")
     search.add_argument("--execute-live", action="store_true", help="explicit bounded live consent")
     search.set_defaults(handler=_cmd_search)
@@ -814,6 +892,32 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--terminal", action="store_true", help="open Terminal for this explicitly approved pinned execution")
         command.set_defaults(handler=_cmd_continue)
 
+    start = subparsers.add_parser("start",help="start an existing prepared execution without creating another grant")
+    start.add_argument("--run-info",required=True)
+    start.add_argument("--execute-live",action="store_true")
+    start.add_argument("--terminal",action="store_true")
+    from .operations import start as start_existing
+    start.set_defaults(handler=start_existing)
+    for name in ("inspect","audit"):
+        command=subparsers.add_parser(name,help="read original execution evidence locally")
+        command.add_argument("--run-info",required=True)
+        command.set_defaults(handler=_cmd_inspection)
+    revise=subparsers.add_parser("revise",help="prepare a new explicit parameter version; never execute")
+    revise.add_argument("--run-info",required=True)
+    revise.add_argument("--page-size",type=int,required=True)
+    revise.add_argument("--max-requests",type=int,default=None)
+    revise.set_defaults(handler=_cmd_revise)
+    detail=subparsers.add_parser("details",help="freeze explicit Scopus IDs for bounded detail retrieval")
+    detail.add_argument("--identifiers-file",required=True,help="restricted JSON list of Scopus identifiers")
+    detail.add_argument("--view",choices=("META","META_ABS","FULL","REF"),default="META_ABS")
+    detail.add_argument("--max-requests",type=int,default=None)
+    detail.add_argument("--check",action="store_true",help="one identifier, one request, zero retries")
+    detail.add_argument("--policy",default=None)
+    detail.add_argument("--execute-live",action="store_true")
+    detail.set_defaults(handler=_cmd_details)
+    caps=subparsers.add_parser("capabilities",help="offline metadata profiles, field requirements and request estimates")
+    caps.add_argument("--records",type=int,default=1)
+    caps.set_defaults(handler=_cmd_capabilities)
     doctor = subparsers.add_parser("doctor", help="check local control-plane readiness")
     doctor.add_argument("--policy", required=True)
     doctor.add_argument("--db", help="defaults to the policy-bound database")

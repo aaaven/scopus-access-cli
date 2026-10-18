@@ -100,6 +100,9 @@ with ExitStack() as stack:
         import shlex
         from scopus_access import terminal_run
         def run_mock_terminal(command):
+            if os.environ.get("SCOPUS_TEST_TERMINAL_RUN") == "fail_open":
+                from scopus_access.terminal_init import TerminalInitError
+                raise TerminalInitError("TERMINAL_OPEN_FAILED")
             with mock.patch.object(sys.stdin, "isatty", return_value=True):
                 terminal_run.child_main(shlex.split(command)[-6:])
         stack.enter_context(mock.patch.object(terminal_run, "_launch", run_mock_terminal))

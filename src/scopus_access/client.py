@@ -138,7 +138,7 @@ def _validate_request(request: TransportRequest) -> None:
     if len(names) != len(set(names)):
         raise UnsafeRequestError("Duplicate query parameters are not permitted.")
     if parsed.path == "/content/search/scopus":
-        allowed = {"query", "view", "count", "cursor", "start"}
+        allowed = {"query", "view", "count", "cursor", "start", "sort"}
         if not {"query", "view", "count"} <= set(names) or not set(names) <= allowed:
             raise UnsafeRequestError()
         if ("cursor" in names) == ("start" in names):
@@ -867,6 +867,11 @@ class ElsevierApiClient:
             "view": plan.view,
             "count": str(plan.page_size),
         }
+        options = frozen["queries"][API_SCOPUS_SEARCH].get("parameters")
+        if options is not None:
+            from .query import validate_parameters
+            validate_parameters(options)
+            parameters["sort"] = options["sort"]
         if plan.pagination_mode == "cursor":
             if start is not None:
                 raise UnsafeRequestError("Offset is not released for this cursor task.")

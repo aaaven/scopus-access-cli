@@ -1021,6 +1021,7 @@ class LedgerExecutionAdapter:
                 result.quota_state.value.lower()
                 if accepted
                 else "quota_telemetry_unknown",
+                result.header_reason_code,
             )
 
     def assess_running_forecast(
@@ -1108,7 +1109,11 @@ def _search_paging(
             if not isinstance(cursor_value, dict):
                 raise TypeError
             next_cursor = cursor_value.get("@next")
-            if next_cursor in (None, ""):
+            total_value=search.get("opensearch:totalResults")
+            consumed=int(search.get("opensearch:startIndex", (request.page_number-1)*request.page_size))+result_count
+            if next_cursor in (None, "") or next_cursor == request.cursor:
+                if total_value is not None and consumed<int(total_value): raise ValueError
+                if next_cursor == request.cursor and total_value is None: raise ValueError
                 return result_count, False, None
             if (
                 not isinstance(next_cursor, str)

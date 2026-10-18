@@ -38,7 +38,7 @@ def _write_run_info(manifest_path, policy_path, database, *, execute_live):
     info = {
         "schema_version": "1.0", "mode": "run" if execute_live else "preview",
         "project_id": task["project_id"], "task_id": task["task_id"],
-        "release_id": task["release_id"], "api_name": "scopus_search",
+        "release_id": task["release_id"], "api_name": task["requests"][0]["api_name"],
         "parent_run_id": "run_" + uuid.uuid4().hex if execute_live else None,
         "manifest_path": str(manifest_path),
         "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
@@ -61,7 +61,7 @@ def _read_run_info(path, *, preview=False):
     if (set(info) != _RUN_INFO_FIELDS or info["schema_version"] != "1.0"
             or info["mode"] != ("preview" if preview else "run")):
         raise ValidationError("Run info must describe an execution, not a preview.")
-    if info["api_name"] != "scopus_search":
+    if info["api_name"] not in {"scopus_search", "abstract_retrieval"}:
         raise ValidationError("Unsupported run info API.")
     for name in ("project_id", "task_id", "release_id") + (() if preview else ("parent_run_id",)):
         safe_identifier(info[name], field=name)
@@ -69,7 +69,7 @@ def _read_run_info(path, *, preview=False):
         raise ValidationError("A preview cannot contain an execution identifier.")
     for name in ("manifest_sha256", "policy_sha256", "query_package_sha256"):
         validate_sha256(info[name])
-    for name, maximum in (("planned_requests", 25), ("page_size", 200)):
+    for name, maximum in (("planned_requests", 1000), ("page_size", 200)):
         if type(info[name]) is not int or not 1 <= info[name] <= maximum:
             raise ValidationError("Run info bounds are invalid.")
     paths = {}
@@ -139,7 +139,8 @@ def _approve_preview(path):
 def _continuation_arguments(args):
     action, source = next((name, getattr(args, name)) for name in ("status", "resume", "export_records")
                           if getattr(args, name) is not None)
-    if args.query_file is not None or args.policy is not None or args.pages is not None or args.page_size is not None:
+    if (args.query_file is not None or args.policy is not None or args.pages is not None or args.page_size is not None
+            or any(getattr(args,n,None) is not None for n in ("view","pagination","sort"))):
         raise ValidationError("Continuation uses the original pinned configuration and bounds.")
     if args.execute_live and action != "resume":
         raise ValidationError("Only resume accepts explicit live execution consent.")
@@ -174,7 +175,7 @@ def _default_policy():
                           code="PROJECT_NOT_INITIALIZED")
 
 
-def prepare(args):
+def prepare(args, *, query_text=None, predecessor=None):
     """Freeze exactly the supplied operation; no request is issued here."""
 
     policy_path = resolve_input_file(args.policy or _default_policy(), base_dir=Path.cwd())
@@ -186,8 +187,16 @@ def prepare(args):
         raise ValidationError("The simple tool requires one configured project.")
     project = next(iter(policy.project_api_key_aliases))
     policy.key_alias_for(project, "scopus_search")
-    if not 1 <= args.pages <= 25 or not 1 <= args.page_size <= 200:
-        raise ValidationError("Use 1-25 pages and 1-200 records per page.")
+    view = getattr(args, "view", None) or "STANDARD"
+    pagination = getattr(args, "pagination", None) or "offset"
+    maximum = 200 if view == "STANDARD" else 25
+    args.page_size = maximum if args.page_size is None else args.page_size
+    if not 1 <= args.pages <= 1000 or not 1 <= args.page_size <= maximum:
+        raise ValidationError("Use 1-1000 requests and the documented view-specific page bound.")
+    if pagination not in {"offset", "cursor"} or view not in {"STANDARD", "COMPLETE"}:
+        raise ValidationError("Select a supported explicit Search view and pagination mode.")
+    if pagination == "offset" and args.pages * args.page_size > 5000:
+        raise ValidationError("Offset scope exceeds the documented ceiling; explicitly select cursor and its required access.")
     task_type = "preflight" if getattr(args, "check", False) else "survey_run"
     if task_type == "preflight" and (args.pages != 1 or args.page_size != 1):
         raise ValidationError("A check is exactly one request with at most one result.")
@@ -200,18 +209,21 @@ def prepare(args):
         if snapshot is not None and snapshot.state not in {
                 QuotaState.RESET_VERIFY, QuotaState.QUOTA_TELEMETRY_UNKNOWN}:
             task_type = "survey_run"
-    try:
-        query = read_file_no_follow(
-            resolve_input_file(args.query_file, base_dir=Path.cwd()), max_bytes=32768
-        )
-    except ValidationError as exc:
-        if exc.code == "FILE_TOO_LARGE":
-            raise QueryValidationError("Query exceeds the 32768-byte limit.", code="QUERY_TOO_LARGE") from None
-        raise
-    try:
-        query = query.decode("utf-8")
-    except UnicodeDecodeError:
-        raise QueryValidationError("Query file must contain UTF-8 text.", code="QUERY_INVALID_UTF8") from None
+    if query_text is None:
+        try:
+            query = read_file_no_follow(
+                resolve_input_file(args.query_file, base_dir=Path.cwd()), max_bytes=32768
+            )
+        except ValidationError as exc:
+            if exc.code == "FILE_TOO_LARGE":
+                raise QueryValidationError("Query exceeds the 32768-byte limit.", code="QUERY_TOO_LARGE") from None
+            raise
+        try:
+            query = query.decode("utf-8")
+        except UnicodeDecodeError:
+            raise QueryValidationError("Query file must contain UTF-8 text.", code="QUERY_INVALID_UTF8") from None
+    else:
+        query = query_text
     roots = policy.output_roots_for(project)
     output = policy.project_binding.output if policy.project_binding else (
         roots[0] if roots[0].name == "restricted_metadata" else roots[0] / "restricted_metadata"
@@ -220,21 +232,29 @@ def prepare(args):
     identifier = uuid.uuid4().hex
     task_id, release_id = "fetch_" + identifier, "release_" + identifier
     package_path, package_hash = store.write_search_package(
-        project_id=project, task_id=task_id, release_id=release_id, query=query, task_type=task_type
+        project_id=project, task_id=task_id, release_id=release_id, query=query, task_type=task_type,
+        parameters={"schema_version":"1.0", "sort":getattr(args,"sort",None) or "-coverDate"},
     )
     now = datetime.now(timezone.utc)
     timestamp = now.isoformat().replace("+00:00", "Z")
     request = {
-        "api_name": "scopus_search", "view": "STANDARD", "page_size": args.page_size,
-        # This tool is bounded to 5,000 results. Deep cursor pagination adds
-        # subscriber-only requirements and is unnecessary for this entry point.
-        "pagination_mode": "offset", "anticipated_result_count": args.pages * args.page_size,
+        "api_name": "scopus_search", "view": view, "page_size": args.page_size,
+        "pagination_mode": pagination, "anticipated_result_count": args.pages * args.page_size,
         "anticipated_unique_detail_records": 0, "forecast_pagination": args.pages,
         "forecast_detail_retrieval": 0, "forecast_validation": 0, "retry_allowance": 0,
         "estimated_requests_with_margin": args.pages, "request_limit": args.pages,
         "assumptions": "Operator-selected page bound; no automatic query changes.",
         "estimator": "scopus-fetch", "estimated_at_utc": timestamp,
     }
+    return _publish_task(policy_path, policy, project, store, identifier, task_id, release_id,
+                         task_type, package_path, package_hash, request, args.execute_live,
+                         timestamp, predecessor)
+
+
+def _publish_task(policy_path, policy, project, store, identifier, task_id, release_id,
+                  task_type, package_path, package_hash, request, execute_live, timestamp, predecessor=None):
+    output = store.root
+    now = datetime.now(timezone.utc)
     control_hash = execution_control_sha256(
         project_id=project, task_id=task_id, task_type=task_type, release_id=release_id,
         query_manifest_sha256=package_hash, requests=[request],
@@ -252,9 +272,9 @@ def prepare(args):
     release_hash = _save(release_path, {
         "schema_version": "1.0", "evidence_type": "task_release",
         "project_id": project, "task_id": task_id, "task_type": task_type,
-        "release_id": release_id, "status": "APPROVED" if args.execute_live else "DRAFT",
+        "release_id": release_id, "status": "APPROVED" if execute_live else "DRAFT",
         "synthetic": False,
-        "authority": "OPERATOR_EXPLICIT_QUERY_EXECUTION" if args.execute_live else "UNAPPROVED_PREVIEW",
+        "authority": "OPERATOR_EXPLICIT_QUERY_EXECUTION" if execute_live else "UNAPPROVED_PREVIEW",
         "approved_at_utc": timestamp,
         "expires_at_utc": (now + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
         "query_manifest_sha256": package_hash, "execution_control_sha256": control_hash,
@@ -284,7 +304,19 @@ def prepare(args):
     }
     snapshot_path = runtime / "policy.json"
     _save(snapshot_path, policy_value)
+    if predecessor is not None:
+        _save(runtime / "parameter-version.json", predecessor)
     return manifest_path, snapshot_path, policy.control_database_path
+
+
+def _plan_summary(task):
+    _, package = read_verified_json(task['query_manifest_path'], task['query_manifest_sha256'], description='operation package')
+    operation = package.get('queries',{}).get('scopus_search',{})
+    from .query import validate_search_operation
+    if operation: validate_search_operation(operation)
+    plan = task['requests'][0]
+    return {'view':plan['view'], 'pagination_mode':plan['pagination_mode'],
+            'sort':operation.get('parameters',{}).get('sort','provider_default_legacy')}
 
 
 def main(argv=None):
@@ -298,6 +330,9 @@ def main(argv=None):
     parser.add_argument("--policy", help="explicit legacy policy or this project's bound configuration")
     parser.add_argument("--execute-live", action="store_true",
                         help="approve this exact query and page bound, then execute; default is offline preview")
+    parser.add_argument("--view", choices=("STANDARD", "COMPLETE"), default=None)
+    parser.add_argument("--pagination", choices=("offset", "cursor"), default=None)
+    parser.add_argument("--sort", default=None)
     parser.add_argument("--check", action="store_true", help="one-request, one-result credential/quota check")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--status", metavar="RUN_INFO", help="inspect an existing run without credentials or network")
@@ -308,14 +343,13 @@ def main(argv=None):
         args = parser.parse_args(argv)
         if args.execute_prepared is not None:
             if (not args.execute_live or args.query_file is not None or args.policy is not None
-                    or args.pages is not None or args.page_size is not None or args.check):
+                    or args.pages is not None or args.page_size is not None or args.check
+                    or args.view is not None or args.pagination is not None or args.sort is not None):
                 raise ValidationError("Prepared execution requires explicit consent and original bounds.")
             manifest, policy, database = _approve_preview(args.execute_prepared)
             run_info_path, info = _write_run_info(manifest, policy, database, execute_live=True)
             task = parse_json_object(read_file_no_follow(manifest), description="task")
-            arguments = ["preflight" if task["task_type"] == "preflight" else "run",
-                         str(manifest), "--policy", str(policy), "--db", str(database),
-                         "--run-id", info["parent_run_id"], "--execute-live"]
+            arguments = ["start", "--run-info", str(run_info_path), "--execute-live"]
         elif any(getattr(args, name) is not None for name in ("status", "resume", "export_records")):
             if args.check:
                 raise ValidationError("Continuation cannot change the original operation.")
@@ -324,7 +358,7 @@ def main(argv=None):
             if args.query_file is None:
                 raise ValidationError("A query file or continuation action is required.")
             args.pages = 1 if args.pages is None else args.pages
-            args.page_size = (1 if args.check else 200) if args.page_size is None else args.page_size
+            args.page_size = 1 if args.check else args.page_size
             manifest, policy, database = prepare(args)
             run_info_path, info = _write_run_info(manifest, policy, database, execute_live=args.execute_live)
             task = parse_json_object(read_file_no_follow(manifest), description="task")
@@ -345,7 +379,7 @@ def main(argv=None):
                 query_package_sha256=task["query_manifest_sha256"],
                 run_info_path=str(run_info_path), manifest_path=str(manifest),
                 policy_path=str(policy), database_path=str(database),
-                network_calls=0, secret_reads=0,
+                **_plan_summary(task), network_calls=0, secret_reads=0,
             ))
             return cli.EXIT_OK
         if args.query_file is not None or args.execute_prepared is not None:
@@ -355,7 +389,7 @@ def main(argv=None):
                 policy_path=str(policy), database_path=str(database),
                 query_package_sha256=info["query_package_sha256"],
                 planned_requests=info["planned_requests"], page_size=info["page_size"],
-                network_calls=0, secret_reads=0,
+                **_plan_summary(task), network_calls=0, secret_reads=0,
             ))
     except (OSError, ValueError, RuntimeError, ScopusAccessError) as exc:
         missing = isinstance(exc, ValidationError) and exc.code == "PROJECT_NOT_INITIALIZED"
@@ -370,6 +404,45 @@ def main(argv=None):
         ))
         return cli.EXIT_VALIDATION
     return cli.main(arguments)
+
+
+
+def prepare_details(args):
+    """Freeze caller-supplied Scopus IDs; one detail request per identifier."""
+    from .manifest import SCOPUS_IDENTIFIER_RE
+    policy_path=resolve_input_file(args.policy or _default_policy(),base_dir=Path.cwd())
+    policy=load_policy(str(policy_path)); _require_enclosing_project(policy)
+    if policy.control_database_path is None or len(policy.project_api_key_aliases)!=1:
+        raise ValidationError('Detail preparation requires one provisioned project.')
+    project=next(iter(policy.project_api_key_aliases))
+    values=json.loads(read_file_no_follow(resolve_input_file(args.identifiers_file,base_dir=Path.cwd()),max_bytes=1024*1024))
+    if (not isinstance(values,list) or not values or len(values)>1000
+            or any(not isinstance(v,str) or SCOPUS_IDENTIFIER_RE.fullmatch(v) is None for v in values)
+            or len(set(values))!=len(values)):
+        raise ValidationError('Use a JSON list of 1-1000 unique valid Scopus identifiers.')
+    if args.check and len(values)!=1: raise ValidationError('A detail capability check requires exactly one identifier.')
+    if args.max_requests is not None and args.max_requests!=len(values):
+        raise ValidationError('Detail request budget must equal the number of frozen identifiers.')
+    roots=policy.output_roots_for(project)
+    output=policy.project_binding.output if policy.project_binding else roots[0]/'restricted_metadata'
+    store=RestrictedArtifactStore(output,allowed_roots=roots)
+    identifier=uuid.uuid4().hex; task_id='details_'+identifier; release_id='release_'+identifier
+    task_type='preflight' if args.check else 'survey_run'
+    package={'schema_version':'1.0','project_id':project,'task_id':task_id,'task_type':task_type,'release_id':release_id,
+             'identifiers':{'abstract_retrieval':values}}
+    data=(json.dumps(package,sort_keys=True)+'\n').encode()
+    package_path=store._atomic_write(Path('operations')/(task_id+'.json'),data,immutable=True)
+    package_hash=hashlib.sha256(data).hexdigest()
+    stamp=datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
+    count=len(values)
+    request={'api_name':'abstract_retrieval','view':args.view,'page_size':1,'pagination_mode':'single',
+             'anticipated_result_count':count,'anticipated_unique_detail_records':count,
+             'forecast_pagination':0,'forecast_detail_retrieval':count,'forecast_validation':0,'retry_allowance':0,
+             'estimated_requests_with_margin':count,'request_limit':count,
+             'assumptions':'One explicit detail request per frozen identifier; no reference pagination or view fallback.',
+             'estimator':'scopus-details','estimated_at_utc':stamp}
+    return _publish_task(policy_path,policy,project,store,identifier,task_id,release_id,task_type,
+                         package_path,package_hash,request,args.execute_live,stamp)
 
 
 if __name__ == "__main__":

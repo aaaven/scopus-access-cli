@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 — 2026-10-19
+
+- Expose whitelist-only quota validation states, reconciliation reasons and safe service error summaries. Keep HTTP 200 data on unknown telemetry and charge failed requests.
+- Add local inspect/audit/capabilities, serialized start of original unadmitted executions and offline parameter revision. Late Terminal children share the same start gate.
+- Expose explicit cursor, frozen sort, larger bounded budgets, COMPLETE Search and frozen-ID detail requests. Report saved-page identity/offset/total checks and actual field coverage without claiming entitlement or full references.
+- Keep reference pagination, complete author/reference verification and real multi-page acceptance explicitly unfinished.
+
 ## 0.3.4 — 2026-10-19
 
 - Let an agent run the usual init command without asking the user to copy a

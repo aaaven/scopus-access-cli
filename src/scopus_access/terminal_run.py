@@ -27,11 +27,11 @@ from scopus_access.project import _atomic_write, _json_bytes
 from scopus_access.security import read_file_no_follow, reject_symlink_components
 from scopus_access.terminal_init import _launch
 
-_LIMIT = 1024 * 1024
+_LIMIT = 16 * 1024 * 1024
 _NAME = re.compile(r"^terminal-run-[0-9a-f]{32}\.json$")
 _CODES = {"RELEASE_EXPIRED", "PREFLIGHT_RESUME_DENIED", "LIVE_CAPABILITY_LOCKED", "SECRET_UNAVAILABLE",
           "FETCH_SETUP_FAILED", "PROJECT_NOT_INITIALIZED", "PROJECT_BINDING_MISMATCH", "LOCAL_CONTROL_ERROR",
-          "RUN_NOT_FOUND", "RUN_MISMATCH", "TERMINAL_RUN_FAILED", "INVALID_ARGUMENTS"}
+          "RUN_NOT_FOUND", "RUN_MISMATCH", "EXECUTION_ALREADY_STARTED", "TERMINAL_RUN_FAILED", "INVALID_ARGUMENTS"}
 
 
 class TerminalRunError(ScopusAccessError):
@@ -66,7 +66,7 @@ def _result_path(source, value):
 def _records(rows, info):
     """Relay only existing validated events and sanitized local failure codes."""
     from scopus_access.cli import _result
-    if not isinstance(rows, list) or len(rows) > 256:
+    if not isinstance(rows, list) or len(rows) > 10000:
         raise TerminalRunError("TERMINAL_RUN_FAILED")
     result = []
     for row in rows:
@@ -132,8 +132,8 @@ def _read_result(path, info, digest, action):
 
 def run_in_terminal(args, *, timeout=300):
     from scopus_access import cli
-    from scopus_access.fetch import _approve_preview, _read_run_info, _write_run_info
-    if not args.execute_live or args.command not in {"execute", "resume"} or not args.run_info:
+    from scopus_access.fetch import _approve_preview, _read_run_info, _write_run_info, _plan_summary
+    if not args.execute_live or args.command not in {"execute", "start", "resume"} or not args.run_info:
         raise ValidationError("Terminal execution requires original run info and explicit --execute-live consent.")
     if sys.platform != "darwin":
         raise ValidationError("Visible Terminal execution requires macOS.")
@@ -155,8 +155,8 @@ def run_in_terminal(args, *, timeout=300):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise TerminalRunError("TERMINAL_RUN_IN_PROGRESS") from None
-        action = "start" if args.command == "execute" else "resume"
-        if action == "start":
+        action = "resume" if args.command == "resume" else "start"
+        if args.command == "execute":
             manifest, policy, database = _approve_preview(str(source))
             source, info = _write_run_info(manifest, policy, database, execute_live=True)
             # Persist and report the exact execution reference BEFORE opening a
@@ -165,7 +165,8 @@ def run_in_terminal(args, *, timeout=300):
                 "scopus-fetch", "prepared", run_info_path=str(source),
                 parent_run_id=info["parent_run_id"], manifest_path=str(manifest), policy_path=str(policy),
                 database_path=str(database), query_package_sha256=info["query_package_sha256"],
-                planned_requests=info["planned_requests"], page_size=info["page_size"], network_calls=0, secret_reads=0))
+                planned_requests=info["planned_requests"], page_size=info["page_size"],
+                **_plan_summary(json.loads(read_file_no_follow(manifest))), network_calls=0, secret_reads=0))
         info, _ = _context(source)
         digest = hashlib.sha256(read_file_no_follow(source, max_bytes=16384)).hexdigest()
         cwd = Path.cwd().resolve(strict=True)
@@ -221,9 +222,7 @@ def child_main(arguments=None):
         if action == "resume":
             command = ["resume", "--run-info", str(source), "--execute-live"]
         else:
-            command = ["preflight" if manifest.task_type == "preflight" else "run", info["manifest_path"],
-                       "--policy", info["policy_path"], "--db", info["database_path"],
-                       "--run-id", info["parent_run_id"], "--execute-live"]
+            command = ["start", "--run-info", str(source), "--execute-live"]
         output = io.StringIO()
         with contextlib.redirect_stdout(output): code = cli.main(command)
         if len(output.getvalue().encode()) > _LIMIT: raise TerminalRunError("TERMINAL_RUN_FAILED")
