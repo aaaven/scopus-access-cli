@@ -190,7 +190,25 @@ def _ignore_runtime(root):
 def initialize_project(start=None, *, writer=None, prompt=None):
     """Initialize once, or resume a pending setup without replacing its key."""
 
+    progress = {"stage": "project_discovery"}
+    try:
+        return _initialize_project(start, writer=writer, prompt=prompt, progress=progress)
+    except BaseException as exc:
+        # Attach only a fixed step name; preserve the original exception type
+        # and CLI exit code. Keychain errors already carry a precise stage.
+        from .errors import SecretProviderError
+        if not isinstance(exc, SecretProviderError):
+            try:
+                exc.failure_stage = progress["stage"]
+            except (AttributeError, TypeError):
+                pass
+        raise
+
+
+def _initialize_project(start=None, *, writer=None, prompt=None, progress):
+
     from .policy import load_policy
+    from .errors import SecretProviderError
     from .secrets import LOCAL_KEYCHAIN_SERVICE, MacOSKeychainWriter, prompt_api_key
 
     directory = Path(start or Path.cwd()).resolve(strict=True)
@@ -198,6 +216,7 @@ def initialize_project(start=None, *, writer=None, prompt=None):
     path = existing or directory / ".scopus-access" / "policy.json"
     root = path.parent.parent
     with _initialization_lock(path.parent):
+        progress["stage"] = "project_configuration"
         _ignore_runtime(root)
         new = not path.exists()
         if not new:
@@ -246,6 +265,7 @@ def initialize_project(start=None, *, writer=None, prompt=None):
         candidate["project_binding"]["state"] = "ready"
         from .policy import PolicyConfig
         PolicyConfig.from_mapping(candidate, base_dir=path.parent)
+        progress["stage"] = "local_storage"
         for directory in (path.parent / "runs", binding.root / "restricted_metadata", binding.output):
             reject_symlink_components(directory)
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -260,14 +280,19 @@ def initialize_project(start=None, *, writer=None, prompt=None):
         written = False
         # On a resumed setup, query attributes only. A crash after SecItemAdd
         # must not overwrite the item or force a second credential entry.
+        progress["stage"] = "credential_metadata"
         if new or not writer.contains_api_key(binding.alias):
+            progress["stage"] = "credential_prompt"
             with (prompt or prompt_api_key)() as secret:
                 try:
+                    progress["stage"] = "credential_write"
                     writer.add_api_key(binding.alias, binding.keychain_label, secret)
+                except SecretProviderError:
+                    raise
                 except Exception:
-                    from .errors import SecretProviderError
-                    raise SecretProviderError("Credential could not be saved to Keychain.") from None
+                    raise SecretProviderError(stage="credential_write", backend="macos_security_framework") from None
             written = True
+        progress["stage"] = "local_publish"
         reference = hashlib.sha256(_json_bytes(candidate)).hexdigest()
         ledger.register_project_key_alias(binding.project_id, binding.alias, reference)
         _atomic_write(path, _json_bytes(candidate))

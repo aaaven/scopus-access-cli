@@ -1,6 +1,6 @@
 # Scopus Access Tool：通用本地 CLI 架构
 
-更新：2026-10-18。当前实现为 0.3.1。初始化、工程识别、共享本机状态及
+更新：2026-10-19。当前实现为 0.3.2。初始化、工程识别、共享本机状态及
 check/search/execute/status/export/resume/usage 已接通并完成离线验证。实际用法见
 [USAGE.md](USAGE.md)，测试记录见 [VALIDATION.md](VALIDATION.md)。
 
@@ -70,6 +70,10 @@ survey-project/
 `UAEU Survey Research Access Layer` 及 alias（包括 `uaeu-scopus-preflight`）
 保持原样，不自动转换。旧名称是兼容标识，不是使用者必须隶属 UAEU 的要求。
 
+初始化写入与运行读取统一经由 Security.framework，使用结构化 OSStatus 分类。
+未知状态保留原始数值；不解析可能包含敏感内容的系统文本，也不启动 security
+命令读取 key。读取等待超时后不自动重试，迟到的密钥只会在内存中销毁。
+
 Apple 系统接口参考：[SecItemAdd](https://developer.apple.com/documentation/security/secitemadd(_:_:))。
 当前平台依赖 macOS Keychain 和 POSIX 文件锁；Windows 凭据与锁适配未实现。
 
@@ -79,7 +83,14 @@ Apple 系统接口参考：[SecItemAdd](https://developer.apple.com/documentatio
 多个本机调用方通过同一数据库与请求锁协调，不各自复制余额。
 `BEGIN IMMEDIATE` 原子预留所有所需 API；请求发送前记尝试，发送后追加结果。
 证据记录只追加。输出限定在允许的 restricted_metadata 内并拒绝路径逃逸。
-stdout 为有界控制 JSONL，不输出查询或文献正文。
+stdout 为有界控制 JSONL，不输出查询或文献正文。交互终端的简明说明只写 stderr；
+脚本调用不增加这些说明，不改变原 JSON 字段含义或退出码。
+
+查询允许 LF、CRLF 和 Tab；禁止的控制字符仅报告码位与字符位置，不输出原文片段。
+restricted_metadata 内的查询包分别保存 source_text 与实际 query，两者独立记录
+SHA-256，并固定转换规则 identity-utf8-v1。当前不改写任何空白，包括引号内空白；
+通过 URL 百分号编码传输原文，不做静默单行转换。旧 query-only 包仍可读取。
+这验证了本地数据完整性，Scopus 对具体多行语法的接受情况须另做明确批准的实网检查。
 
 状态记录用于避免重复花费、覆盖结果和误判已发送请求；使用者无需手工维护。
 未来自动生成的 USAGE.md 是可读派生报表，可离线重建，不作为可手改的余额来源。

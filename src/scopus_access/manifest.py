@@ -452,16 +452,8 @@ def _validate_query_operations(query_value: Mapping[str, Any], api_names: Tuple[
         if not isinstance(queries, dict) or set(queries) != {"scopus_search"}:
             raise ManifestValidationError("Frozen query manifest lacks queries mapping.")
         search = queries.get("scopus_search")
-        if not isinstance(search, dict) or set(search) != {"query"}:
-            raise ManifestValidationError("Frozen Scopus Search operation is invalid.")
-        query = search.get("query")
-        if (
-            not isinstance(query, str)
-            or not query.strip()
-            or len(query.encode("utf-8")) > 32768
-            or any(ord(character) < 32 for character in query)
-        ):
-            raise ManifestValidationError("Frozen Scopus Search query is invalid.")
+        from .query import validate_search_operation
+        validate_search_operation(search)
     if "abstract_retrieval" in api_names:
         identifiers = query_value.get("identifiers")
         if not isinstance(identifiers, dict) or set(identifiers) != {

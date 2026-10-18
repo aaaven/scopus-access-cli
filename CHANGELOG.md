@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2 — 2026-10-19
+
+- Accept multiline UTF-8 queries, CRLF and tabs without trimming or rewriting
+  quoted whitespace. Restricted frozen packages preserve source/transport text,
+  both SHA-256 digests and the versioned identity-utf8-v1 rule; legacy packages
+  remain supported. Illegal controls report safe codepoint and 1-based location.
+- Add interactive stderr summaries for initialization, previews, status,
+  export, quota and run outcomes while preserving stdout JSON and exit codes.
+- Unify Keychain reading and writing on Security.framework. Preserve generic
+  credential error codes with allowlisted reason/stage/backend/OSStatus and
+  network-activity details. Bound read waits and discard late secret values.
+
 ## 0.3.1 — 2026-10-18
 
 - Fixed per-user offline wheel installation and upgrades, with one PATH entry

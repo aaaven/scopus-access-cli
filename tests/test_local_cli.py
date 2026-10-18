@@ -15,6 +15,7 @@ from scopus_access.integration import LedgerExecutionAdapter
 from scopus_access.ledger import Ledger
 from scopus_access.policy import load_policy
 from scopus_access.secrets import SecretValue
+from scopus_access.errors import SecretProviderError
 
 
 SECRET = b"SYNTHETIC_LOCAL_CLI_CREDENTIAL"
@@ -138,6 +139,42 @@ class LocalCliTests(unittest.TestCase):
         self.check()
         self.assertEqual(len(self.wire.urls), 2)
         self.assertEqual([parse_qs(urlsplit(url).query)["count"] for url in self.wire.urls], [["1"], ["1"]])
+
+    def test_native_credential_failure_is_structured_persisted_and_pre_send(self):
+        self.secret.get_api_key = mock.Mock(side_effect=SecretProviderError(
+            SECRET.decode(), reason="credential_not_found", stage="credential_read",
+            backend="macos_security_framework", system_error_code=-25300))
+        code, rows = self.invoke("check", "--query-file", str(self.query), "--execute-live")
+        self.assertEqual(code, 6)
+        failure = next(r for r in rows if r.get("code") == "secret_unavailable")
+        self.assertEqual(failure["provider_reason"], "credential_not_found")
+        self.assertEqual(failure["system_error_code"], -25300)
+        self.assertFalse(failure["network_request_sent"])
+        self.assertEqual(failure["provider_backend"], "macos_security_framework")
+        self.assertEqual(self.wire.urls, [])
+        self.assertEqual(self.ledger.request_attempt_count(self.policy.project_binding.project_id), 0)
+        logs = list(self.policy.control_database_path.parent.glob("events/*.jsonl"))
+        self.assertEqual(len(logs), 1)
+        saved = [json.loads(line) for line in logs[0].read_text().splitlines()]
+        self.assertIn(failure, saved)
+        from scopus_access.events import validate_event, UnsafeEvent
+        for field, value in (("provider_reason", SECRET.decode()), ("system_error_code", SECRET.decode()),
+                             ("provider_backend", SECRET.decode()), ("network_request_sent", "false")):
+            changed = dict(failure, **{field: value})
+            with self.assertRaises(UnsafeEvent) as caught:
+                validate_event(changed)
+            self.assertNotIn(SECRET.decode(), str(caught.exception))
+
+    def test_untyped_provider_exception_remains_generic_without_leaking_message(self):
+        self.secret.get_api_key = mock.Mock(side_effect=RuntimeError(SECRET.decode()))
+        code, rows = self.invoke("check", "--query-file", str(self.query), "--execute-live")
+        self.assertEqual(code, 6)
+        failure = next(r for r in rows if r.get("code") == "secret_unavailable")
+        self.assertEqual(failure["provider_reason"], "keychain_error")
+        self.assertEqual(failure["provider_backend"], "unknown")
+        self.assertIsNone(failure["system_error_code"])
+        self.assertFalse(failure["network_request_sent"])
+        self.assertEqual(self.wire.urls, [])
 
     def test_advanced_read_commands_default_to_same_bound_project_database(self):
         self.check()

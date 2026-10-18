@@ -1,7 +1,7 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.3.1**。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.3.2**。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
 工具不负责选题、corpus 建立、筛选、科学去重或文献计量分析。
@@ -28,7 +28,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.3.1-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.3.2-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help
@@ -61,7 +61,7 @@ scopus-access init
 按不回显的提示输入 key。初始化不联网，额度为 `UNVERIFIED`，尚不表示 key 已验证。
 重复执行 `init` 会复用已有绑定，不覆盖 key、不清空账本。
 
-用编辑器在工程的 `restricted_metadata/query.txt` 中保存一条单行 UTF-8 Scopus 查询。
+用编辑器在工程的 `restricted_metadata/query.txt` 中保存 UTF-8 Scopus 查询，可正常多行排版。
 可使用自己确认过的 `DOI(...)` 或 `TITLE-ABS-KEY(...)` 表达式；工具原样发送，不替换查询。
 
 ```sh
@@ -89,6 +89,8 @@ scopus-access usage
 
 CLI stdout 是有界 JSONL 控制流，包含状态、请求计数、hash 和文件路径，
 不打印查询或文献正文。每次预览/执行会输出 `run_info_path`。
+交互终端同时在 stderr 显示简明中文说明；非交互调用保持 JSON 行为，不增加网络或密钥读取。
+`init` 会明确区分“本地配置完成”和“Scopus API 尚未验证（UNVERIFIED）”。
 
 若要执行已检查的冻结预览，使用预览的路径；不要为了执行同一次预览重新提交查询：
 
@@ -124,6 +126,15 @@ my-survey/
 
 key 本身只保存在 Keychain。工具会添加 Git 忽略规则，并拒绝操作已被 Git 跟踪的
 控制/受限目录。不要强制加入这些文件，也不要手改账本余额。
+
+查询允许 LF、CRLF、Tab；原始 UTF-8 文本（含首尾排版）与实际发送文本分别记录在
+受限查询包中，各有 SHA-256，转换规则固定为 `identity-utf8-v1`。此版本不做单行化、
+空白合并或引号内改写，URL 编码还原后与原文一致。NUL、DEL 等禁止字符会报告码位和
+1 起始的字符位置/行/列，不输出查询片段。旧 query-only 冻结包继续兼容。
+
+Keychain 读写统一使用 Security.framework。`SECRET_UNAVAILABLE` / `secret_unavailable`
+继续保留，并附脱敏原因、失败阶段、后端、OSStatus 和请求活动状态；参见
+[凭据错误诊断](docs/USAGE.md#11-凭据错误诊断)。
 
 根目录或任意子目录都绑定同一工程；最近配置损坏时立即停止，不借用父工程、
 用户级配置、环境变量或源码仓库的 key。项目 ID 不随目录名改变；复制到另一个

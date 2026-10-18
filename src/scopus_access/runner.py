@@ -23,6 +23,7 @@ from typing import Any, Callable, Iterator, Mapping, Optional, Protocol, Tuple
 from .artifacts import Checkpoint, RestrictedArtifactStore, RunReceipt
 from .events import ControlEventWriter, utc_now
 from .security import execution_run_id
+from .errors import secret_error_details
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:\-]{0,127}$")
@@ -44,6 +45,10 @@ class RunnerGateError(RunnerError):
 
 class _SecretAccessError(RunnerError):
     """Internal marker whose message never contains provider exception text."""
+
+    def __init__(self, source=None):
+        super().__init__("Credential access failed.")
+        self.details = secret_error_details(source)
 
 
 def _remote_error_code(body: bytes) -> str:
@@ -501,8 +506,8 @@ class GovernedRunner:
                 value = ""
         except _SecretAccessError:
             raise
-        except BaseException:
-            raise _SecretAccessError() from None
+        except BaseException as exc:
+            raise _SecretAccessError(exc) from None
 
     @staticmethod
     def _headers(headers: Mapping[str, str]) -> Mapping[str, str]:
@@ -674,6 +679,7 @@ class GovernedRunner:
         attempt_id: Optional[str] = None,
         http_status: Optional[int] = None,
         remote_error_code: Optional[str] = None,
+        provider_details: Optional[Mapping[str, Any]] = None,
     ) -> RunReceipt:
         checkpoint_ref = self._checkpoint(
             auth,
@@ -698,6 +704,10 @@ class GovernedRunner:
             fields["http_status"] = http_status
         if remote_error_code is not None:
             fields["remote_error_code"] = remote_error_code
+        if provider_details is not None:
+            fields.update(provider_details)
+            fields["network_request_sent"] = (True if pages_completed else
+                                               False if requests_attempted == 0 else None)
         self._emit(event_type, auth, **fields)
         return self._receipt(
             auth,
@@ -855,12 +865,13 @@ class GovernedRunner:
                 try:
                     secret_scope = self._secret_for_attempt(auth.api_key_alias)
                     api_key = secret_scope.__enter__()
-                except BaseException:
+                except BaseException as exc:
                     return self._stop(
                         auth,
                         event_type="failed",
                         event_code_field="code",
                         event_code="secret_unavailable",
+                        provider_details=exc.details if isinstance(exc, _SecretAccessError) else secret_error_details(exc),
                         status="failed",
                         completeness="partial" if pages_completed else "not_started",
                         page_number=page_number,

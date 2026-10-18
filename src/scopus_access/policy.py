@@ -635,7 +635,7 @@ def authorize_live_execution(
     ):
         raise LiveCapabilityLocked("Pinned task evidence no longer matches the task.")
     search_operation = current_query.get("queries", {}).get(API_SCOPUS_SEARCH, {})
-    if search_operation.get("query") == "PENDING_OPERATOR_SELECTED_QUERY":
+    if isinstance(search_operation.get("query"), str) and search_operation["query"].strip() == "PENDING_OPERATOR_SELECTED_QUERY":
         raise LiveCapabilityLocked("A real operator-selected Search query is required.")
     try:
         current_control_digest = manifest.current_execution_control_sha256()

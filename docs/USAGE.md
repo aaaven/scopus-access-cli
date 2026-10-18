@@ -1,6 +1,6 @@
 # 使用说明
 
-当前版本 0.3.1。安装步骤见[首页](../README.md#安装一次)。命令面向终端、脚本和
+当前版本 0.3.2。安装步骤见[首页](../README.md#安装一次)。命令面向终端、脚本和
 本机编码代理；不存在聊天身份、跨机器服务或外部通知步骤。
 
 ## 1. 一个本机工具，多个工程
@@ -39,9 +39,22 @@ macOS 可能要求允许系统凭据访问；这与远端 Scopus 权限是两件
 
 ## 3. 准备精确查询
 
-使用编辑器在调用工程的 `restricted_metadata/query.txt` 保存单行 UTF-8 查询。
+使用编辑器在调用工程的 `restricted_metadata/query.txt` 保存 UTF-8 查询，可多行排版。
 文件内容就是你要发送的完整 Scopus 表达式；不把 key 放在文件中。本文不预选研究
 主题，也没有自动科学替代、去重、改写或按年份拆分。
+
+支持 LF、Windows CRLF 和 Tab，首尾排版也完整保留。冻结查询包同时保存 `query`
+（实际发送文本）及 `provenance`：`source_text`、`source_sha256`、`transport_sha256`、
+`schema_version=1.0` 和 `transformation=identity-utf8-v1`。两份文本当前相同；没有
+单行转换或空白合并，因而引号和花括号中的空白、甚至换行也不会被工具改写。
+URL 百分号编码只是传输封装，服务端解码后的查询与原文相同；具体语法能否被
+Scopus 接受仍由 API 决定。工具不在失败后自动转换并重发。
+
+NUL 等禁止控制字符（小于 32，但 LF/CR/Tab 除外）以及 DEL 会给出
+`QUERY_INVALID_CONTROL`、`codepoint`、`character_position`、`line`、`column`。
+位置均从 1 开始，按 Unicode 字符计算；CRLF 算一个换行，Tab 算一个字符，
+列号不按终端视觉宽度展开。错误中没有查询片段。空查询、超限和非法 UTF-8
+也有单独的 QUERY_* 错误码。非法查询在凭据读取和网络之前停止。
 
 例如你可以自行确定 `DOI(...)`、`TITLE(...)` 或 `TITLE-ABS-KEY(...)` 条件。
 工具只检查已实现的请求边界，不保证你选择的检索式适合研究问题。
@@ -94,6 +107,11 @@ scopus-access execute --run-info /path/to/search-preview/run-info.json --execute
 终端输出是逐行 JSON；每行可以独立解析。常见字段包括 `command`、`status`、
 `network_calls`、`secret_reads`、`run_info_path`、`parent_run_id`、`requests_attempted`、
 `records_ref` 和 `stop_reason`。不是每类事件都包含全部字段。
+
+当 stdin 和 stderr 均为交互终端时，stderr 另显示操作结果、失败步骤及下一步；
+stdout 的原有 JSON 和退出码保持兼容。初始化完成会提示 key 已存入钥匙串，
+并明确 UNVERIFIED 表示尚未联网验证，不是本地初始化失败。重复初始化提示复用。
+非交互调用不增加这些人工说明，也不会为说明额外读 key 或联网。
 
 预览生成的 run-info 标记 mode=preview；执行开始前生成一份新的 mode=run 文件。
 `prepared` 只表示计划已保存，不表示请求已发送。后续 status/export/resume 必须使用
@@ -194,3 +212,34 @@ scopus-access resume --run-info /path/to/execution/run-info.json --execute-live
 卸载工具时只移除 `~/.local/bin/` 下这两个受管理的符号链接、
 `~/.local/share/scopus-access/` 和 profile 中的 Scopus PATH 行。
 工程数据和 Keychain 条目是独立的，不随 CLI 卸载删除；需要删除时由使用者另行处理。
+
+## 11. 凭据错误诊断
+
+初始化与运行时读取均使用原生 Security.framework，不再用 `security -w` 的进程
+stdout 接收密钥。service/alias 与旧配置保持一致；升级不创建或替换条目。
+
+外层保留 `SECRET_UNAVAILABLE`（CLI 设置阶段）或 `secret_unavailable`（运行事件），
+附带下列受限字段；系统原始错误文本、成功返回数据和密钥都不会进入日志：
+
+| provider_reason | 解释及处理 |
+|---|---|
+| credential_not_found | OSStatus -25300；未找到对应条目，检查当前工程绑定 |
+| interaction_not_allowed | OSStatus -25308；系统不允许本次交互，改在可授权的本机环境操作 |
+| access_denied | OSStatus -128 或 -25293；取消或认证/授权未通过，不推断具体点击或账户状态 |
+| keychain_timeout | 本地等待截止，尚无系统返回码；检查授权窗口后再明确操作 |
+| keychain_error | 其他情况；有 OSStatus 就原样保留，不猜测“锁定”等原因 |
+| credential_already_exists | 写入发现 -25299；未覆盖，保留 pending 后重试检查 |
+| credential_input_invalid | 隐藏输入为空或格式无效；在交互提示重新输入 |
+
+`failure_stage` 标识隐藏输入、条目检查、保存、读取、解码或后端加载等阶段；
+`provider_backend` 是 `macos_security_framework`、`terminal_input` 或 `unknown`。
+`system_error_code` 为原始有符号 OSStatus 整数，没有系统结果时为 null。
+不得把退出码或进程 stderr 猜测转换成 OSStatus。
+
+`network_request_sent=false` 表示失败前没有请求发送；true 表示原运行已有完成页；
+null 表示已有未能可靠判定发送状态的尝试。原分页的请求计数仍看 `requests_attempted`。
+凭据首次读取失败发生于 ATTEMPT 落账之前，因此不消耗一次 API 尝试。
+
+读取默认等待 10 秒（保留原 Python 接口的 timeout_seconds）。系统调用无法被强制
+中断：超时后不会发送请求或自动重试，后台晚到的密钥会立即清零丢弃。
+这个限制不会被伪装成“用户拒绝”或系统返回的超时状态码。

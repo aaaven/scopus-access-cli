@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import ctypes
 import getpass
 import warnings
+import threading
+import math
 from typing import Protocol
 
 from .errors import SecretProviderError, ValidationError
@@ -15,21 +16,36 @@ from .security import safe_identifier
 
 
 LOCAL_KEYCHAIN_SERVICE = "Scopus Access Tool"
+NATIVE_BACKEND = "macos_security_framework"
+
+
+def _status_error(status, stage):
+    # Values and meanings come from the macOS SDK's SecBase.h. Do not infer
+    # locked/unlocked state or a user decision from an unrecognized status.
+    reason = {-25300: "credential_not_found", -25308: "interaction_not_allowed",
+              -128: "access_denied", -25293: "access_denied",
+              -25299: "credential_already_exists"}.get(status, "keychain_error")
+    return SecretProviderError(reason=reason, stage=stage, backend=NATIVE_BACKEND,
+                               system_error_code=status)
 
 
 def prompt_api_key() -> "SecretValue":
     """Require an interactive, non-echoing terminal; never fall back to stdin."""
 
     if not sys.stdin.isatty():
-        raise SecretProviderError("Initialize credentials in an interactive terminal.")
+        raise SecretProviderError(reason="interaction_not_allowed", stage="credential_prompt", backend="terminal_input")
     value = None
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", getpass.GetPassWarning)
             value = getpass.getpass("Scopus API key (hidden): ", stream=sys.stderr)
         return SecretValue(value.encode("utf-8"))
-    except (EOFError, KeyboardInterrupt, OSError, ValueError, getpass.GetPassWarning):
-        raise SecretProviderError("Credential input was cancelled or unavailable.") from None
+    except SecretProviderError:
+        raise SecretProviderError(reason="credential_input_invalid", stage="credential_prompt", backend="terminal_input") from None
+    except (EOFError, KeyboardInterrupt):
+        raise SecretProviderError(reason="access_denied", stage="credential_prompt", backend="terminal_input") from None
+    except (OSError, ValueError, getpass.GetPassWarning):
+        raise SecretProviderError(reason="interaction_not_allowed", stage="credential_prompt", backend="terminal_input") from None
     finally:
         value = None
 
@@ -39,7 +55,7 @@ class _AppleKeychain:
 
     def __init__(self):
         if sys.platform != "darwin":
-            raise SecretProviderError("Apple Keychain is unavailable on this platform.")
+            raise SecretProviderError(stage="keychain_backend", backend=NATIVE_BACKEND)
         self.cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
         self.security = ctypes.CDLL("/System/Library/Frameworks/Security.framework/Security")
         pointer = ctypes.c_void_p
@@ -53,6 +69,14 @@ class _AppleKeychain:
         self.cf.CFDataCreate.restype = pointer
         self.cf.CFRelease.argtypes = [pointer]
         self.cf.CFRelease.restype = None
+        self.cf.CFDataGetLength.argtypes = [pointer]
+        self.cf.CFDataGetLength.restype = ctypes.c_ssize_t
+        self.cf.CFDataGetBytePtr.argtypes = [pointer]
+        self.cf.CFDataGetBytePtr.restype = pointer
+        self.cf.CFGetTypeID.argtypes = [pointer]
+        self.cf.CFGetTypeID.restype = ctypes.c_ulong
+        self.cf.CFDataGetTypeID.argtypes = []
+        self.cf.CFDataGetTypeID.restype = ctypes.c_ulong
         for name in ("SecItemAdd", "SecItemCopyMatching"):
             function = getattr(self.security, name)
             function.argtypes = [pointer, ctypes.POINTER(pointer)]
@@ -61,7 +85,12 @@ class _AppleKeychain:
     def _constant(self, name):
         return ctypes.c_void_p.in_dll(self.security, name).value
 
-    def call(self, service, alias, *, label=None, secret=None):
+    def read(self, service, alias):
+        return self.call(service, alias, return_data=True)
+
+    def call(self, service, alias, *, label=None, secret=None, return_data=False):
+        stage = "credential_write" if secret is not None else (
+            "credential_read" if return_data else "credential_metadata")
         # Dictionaries retain their CF objects. Release both our references and
         # the dictionary, including its in-memory CFData, on every exit path.
         keys = (ctypes.c_byte * 1).in_dll(self.cf, "kCFTypeDictionaryKeyCallBacks")
@@ -71,7 +100,7 @@ class _AppleKeychain:
         )
         owned = []
         if not dictionary:
-            raise SecretProviderError()
+            raise SecretProviderError(stage=stage, backend=NATIVE_BACKEND)
         try:
             self.cf.CFDictionarySetValue(dictionary, self._constant("kSecClass"),
                                          self._constant("kSecClassGenericPassword"))
@@ -81,21 +110,50 @@ class _AppleKeychain:
             for name, value in attributes.items():
                 item = self.cf.CFStringCreateWithCString(None, value.encode("utf-8"), 0x08000100)
                 if not item:
-                    raise SecretProviderError()
+                    raise SecretProviderError(stage=stage, backend=NATIVE_BACKEND)
                 owned.append(item)
                 self.cf.CFDictionarySetValue(dictionary, self._constant(name), item)
             if secret is not None:
                 if secret._closed:
-                    raise SecretProviderError()
+                    raise SecretProviderError(stage=stage, backend=NATIVE_BACKEND)
                 buffer = (ctypes.c_ubyte * len(secret._value)).from_buffer(secret._value)
                 data = self.cf.CFDataCreate(None, ctypes.cast(buffer, ctypes.c_void_p), len(buffer))
                 if not data:
-                    raise SecretProviderError()
+                    raise SecretProviderError(stage=stage, backend=NATIVE_BACKEND)
                 owned.append(data)
                 self.cf.CFDictionarySetValue(dictionary, self._constant("kSecValueData"), data)
                 return int(self.security.SecItemAdd(dictionary, None))
-            # No kSecReturnData: this is a metadata-only existence check.
-            return int(self.security.SecItemCopyMatching(dictionary, None))
+            if not return_data:
+                # No kSecReturnData: metadata-only existence check.
+                return int(self.security.SecItemCopyMatching(dictionary, None))
+            truth = ctypes.c_void_p.in_dll(self.cf, "kCFBooleanTrue").value
+            self.cf.CFDictionarySetValue(dictionary, self._constant("kSecReturnData"), truth)
+            result = ctypes.c_void_p()
+            try:
+                status = int(self.security.SecItemCopyMatching(dictionary, ctypes.byref(result)))
+                if status != 0:
+                    return status, None
+                if not result.value or self.cf.CFGetTypeID(result) != self.cf.CFDataGetTypeID():
+                    raise SecretProviderError(stage="credential_decode", backend=NATIVE_BACKEND,
+                                              system_error_code=status)
+                length = self.cf.CFDataGetLength(result)
+                pointer = self.cf.CFDataGetBytePtr(result)
+                if not pointer or not 1 <= length <= 4096:
+                    raise SecretProviderError(stage="credential_decode", backend=NATIVE_BACKEND,
+                                              system_error_code=status)
+                decoded = None
+                try:
+                    decoded = SecretValue(ctypes.string_at(pointer, length))
+                    decoded.reveal()
+                except SecretProviderError:
+                    if decoded is not None:
+                        decoded.close()
+                    raise SecretProviderError(stage="credential_decode", backend=NATIVE_BACKEND,
+                                              system_error_code=status) from None
+                return status, decoded
+            finally:
+                if result.value:
+                    self.cf.CFRelease(result)
         finally:
             for item in reversed(owned):
                 self.cf.CFRelease(item)
@@ -114,10 +172,12 @@ class MacOSKeychainWriter:
         alias = safe_identifier(alias, field="api_key_alias")
         try:
             status = _AppleKeychain().call(self.service_name, alias)
+        except SecretProviderError:
+            raise
         except Exception:
-            raise SecretProviderError("Keychain metadata could not be checked.") from None
+            raise SecretProviderError(stage="credential_metadata", backend=NATIVE_BACKEND) from None
         if status not in (0, -25300):  # errSecSuccess / errSecItemNotFound
-            raise SecretProviderError("Keychain metadata could not be checked.")
+            raise _status_error(status, "credential_metadata")
         return status == 0
 
     def add_api_key(self, alias, label, secret):
@@ -126,10 +186,12 @@ class MacOSKeychainWriter:
             raise ValidationError("Invalid Keychain label.")
         try:
             status = _AppleKeychain().call(self.service_name, alias, label=label, secret=secret)
+        except SecretProviderError:
+            raise
         except Exception:
-            raise SecretProviderError("Credential could not be saved to Keychain.") from None
+            raise SecretProviderError(stage="credential_write", backend=NATIVE_BACKEND) from None
         if status != 0:
-            raise SecretProviderError("Credential could not be saved; existing items are never replaced.")
+            raise _status_error(status, "credential_write")
 
 
 class SecretValue:
@@ -177,7 +239,11 @@ class SecretProvider(Protocol):
 
 
 class MacOSKeychainSecretProvider:
-    """Read a generic-password item without placing the value in arguments."""
+    """Native Keychain read with OSStatus diagnostics and a bounded wait.
+
+    A timed-out system call cannot be forcibly cancelled. Its daemon worker
+    discards and zeroizes any late secret; no request can use that value.
+    """
 
     def __init__(
         self,
@@ -189,44 +255,58 @@ class MacOSKeychainSecretProvider:
         if not isinstance(service_name, str) or not service_name.strip():
             raise ValidationError("Keychain service name is required.")
         if command_path != "/usr/bin/security":
-            raise ValidationError("Only the system Keychain command is permitted.")
-        if timeout_seconds <= 0 or timeout_seconds > 30:
+            raise ValidationError("Legacy command_path must retain its default; the native backend is fixed.")
+        if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+                or timeout_seconds <= 0 or timeout_seconds > 30):
             raise ValidationError("Invalid Keychain timeout.")
         self._service_name = service_name
-        self._command_path = command_path
         self._timeout_seconds = timeout_seconds
 
     def get_api_key(self, api_key_alias: str) -> SecretValue:
         try:
             alias = safe_identifier(api_key_alias, field="api_key_alias")
-        except ValidationError as exc:
-            raise SecretProviderError() from exc
+        except ValidationError:
+            raise SecretProviderError(backend=NATIVE_BACKEND) from None
         if sys.platform != "darwin":
-            raise SecretProviderError("macOS Keychain is unavailable on this platform.")
-        try:
-            completed = subprocess.run(
-                [
-                    self._command_path,
-                    "find-generic-password",
-                    "-s",
-                    self._service_name,
-                    "-a",
-                    alias,
-                    "-w",
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=self._timeout_seconds,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise SecretProviderError() from exc
-        if completed.returncode != 0:
-            raise SecretProviderError()
-        try:
-            return SecretValue(completed.stdout)
-        finally:
-            # ``completed.stdout`` is immutable; dropping the only local reference
-            # complements SecretValue's best-effort zeroization.
-            completed = None  # type: ignore[assignment]
+            raise SecretProviderError(stage="keychain_backend", backend=NATIVE_BACKEND)
+        condition = threading.Condition()
+        state = {"done": False, "abandoned": False}
+
+        def lookup():
+            value, error = None, None
+            try:
+                status, value = _AppleKeychain().read(self._service_name, alias)
+                if status != 0:
+                    if value is not None:
+                        value.close()
+                        value = None
+                    error = _status_error(status, "credential_read")
+                elif not isinstance(value, SecretValue):
+                    error = SecretProviderError(stage="credential_decode", backend=NATIVE_BACKEND)
+            except SecretProviderError as exc:
+                error = exc
+            except BaseException:
+                error = SecretProviderError(backend=NATIVE_BACKEND)
+            with condition:
+                if state["abandoned"]:
+                    if isinstance(value, SecretValue):
+                        value.close()
+                else:
+                    state.update(done=True, value=value, error=error)
+                    condition.notify_all()
+
+        threading.Thread(target=lookup, name="scopus-keychain-read", daemon=True).start()
+        with condition:
+            try:
+                if not condition.wait_for(lambda: state["done"], self._timeout_seconds):
+                    state["abandoned"] = True
+                    raise SecretProviderError(reason="keychain_timeout", backend=NATIVE_BACKEND)
+                if state["error"] is not None:
+                    raise state.pop("error") from None
+                return state.pop("value")
+            except BaseException:
+                state["abandoned"] = True
+                value = state.pop("value", None)
+                if isinstance(value, SecretValue):
+                    value.close()
+                raise

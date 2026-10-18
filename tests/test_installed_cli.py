@@ -72,6 +72,26 @@ class InstalledCliTests(unittest.TestCase):
         self.assertFalse((self.bin.parent / ".scopus-access").exists())
         self.assertFalse((self.bin.parent / "restricted_metadata").exists())
 
+    def test_installed_multiline_query_keeps_original_text_and_wire_provenance(self):
+        self.initialize()
+        query = self.query()
+        text = '\r\nSYNTHETIC_INSTALLED_QUERY\r\nAND\tTITLE("TWO  SPACES")\n'
+        query.write_bytes(text.encode())
+        code, rows = self.invoke(self.root, "check", "--query-file", str(query))
+        self.assertEqual(code, 0, rows)
+        info = json.loads(Path(rows[0]["run_info_path"]).read_text())
+        task = json.loads(Path(info["manifest_path"]).read_text())
+        operation = json.loads(Path(task["query_manifest_path"]).read_text())["queries"]["scopus_search"]
+        self.assertEqual(operation["query"], text)
+        self.assertEqual(operation["provenance"]["source_text"], text)
+        self.assertEqual(operation["provenance"]["transformation"], "identity-utf8-v1")
+        code, rows = self.invoke(self.root, "execute", "--run-info", rows[0]["run_info_path"], "--execute-live", local=False)
+        self.assertEqual(code, 0, rows)
+        code, rows = self.invoke(self.root, "usage")
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]["requests_attempted"], 1)
+        self.assertFalse((self.bin.parent / "restricted_metadata").exists())
+
     def test_installed_end_to_end_check_status_export_and_repeat_init_preserve_history(self):
         self.initialize()
         query = self.query()

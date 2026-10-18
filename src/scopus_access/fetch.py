@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import cli
 from .artifacts import RestrictedArtifactStore
-from .errors import ScopusAccessError, ValidationError
+from .errors import ScopusAccessError, ValidationError, QueryValidationError
 from .manifest import execution_control_sha256
 from .ledger import Ledger
 from .policy import load_policy
@@ -200,13 +200,18 @@ def prepare(args):
         if snapshot is not None and snapshot.state not in {
                 QuotaState.RESET_VERIFY, QuotaState.QUOTA_TELEMETRY_UNKNOWN}:
             task_type = "survey_run"
-    query = read_file_no_follow(
-        resolve_input_file(args.query_file, base_dir=Path.cwd()), max_bytes=32768
-    )
     try:
-        query = query.decode("utf-8").strip()
+        query = read_file_no_follow(
+            resolve_input_file(args.query_file, base_dir=Path.cwd()), max_bytes=32768
+        )
+    except ValidationError as exc:
+        if exc.code == "FILE_TOO_LARGE":
+            raise QueryValidationError("Query exceeds the 32768-byte limit.", code="QUERY_TOO_LARGE") from None
+        raise
+    try:
+        query = query.decode("utf-8")
     except UnicodeDecodeError:
-        raise ValidationError("Query file must contain UTF-8 text.") from None
+        raise QueryValidationError("Query file must contain UTF-8 text.", code="QUERY_INVALID_UTF8") from None
     roots = policy.output_roots_for(project)
     output = policy.project_binding.output if policy.project_binding else (
         roots[0] if roots[0].name == "restricted_metadata" else roots[0] / "restricted_metadata"
@@ -354,10 +359,13 @@ def main(argv=None):
             ))
     except (OSError, ValueError, RuntimeError, ScopusAccessError) as exc:
         missing = isinstance(exc, ValidationError) and exc.code == "PROJECT_NOT_INITIALIZED"
+        query_error = isinstance(exc, QueryValidationError)
         cli._write_control(sys.stdout, cli._result(
-            "scopus-fetch", "error", code="PROJECT_NOT_INITIALIZED" if missing else "FETCH_SETUP_FAILED",
-            message=("Run scopus-access init in this project first; legacy policies require explicit --policy."
+            "scopus-fetch", "error", code=(exc.code if query_error else
+                "PROJECT_NOT_INITIALIZED" if missing else "FETCH_SETUP_FAILED"),
+            message=(str(exc) if query_error else "Run scopus-access init in this project first; legacy policies require explicit --policy."
                      if missing else "Check the query file, explicit policy, and configured output directory."),
+            **(exc.control_details() if query_error else {}),
             network_calls=0, secret_reads=0,
         ))
         return cli.EXIT_VALIDATION

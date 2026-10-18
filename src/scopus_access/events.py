@@ -16,6 +16,7 @@ from pathlib import PurePosixPath
 from typing import Any, Callable, Dict, Mapping, Optional, TextIO
 
 from .security import execution_run_id
+from .errors import PROVIDER_REASONS, PROVIDER_BACKENDS, FAILURE_STAGES
 
 
 EVENT_SCHEMA_VERSION = "1.0"
@@ -110,6 +111,8 @@ _EVENT_OPTIONAL = {
         "page_number",
         "http_status",
         "remote_error_code",
+        "provider_reason", "failure_stage", "provider_backend", "system_error_code",
+        "network_request_sent",
     },
     "local_control_failed": set(),
     "run_completed": {
@@ -186,6 +189,9 @@ _HEADER_LIKE_RE = re.compile(
     r"(?i)(?:x-els-apikey|bearer\s+|authorization\s*:|cookie\s*:|api[_-]?key)"
 )
 _ENUM_FIELDS = {
+    "provider_reason": PROVIDER_REASONS,
+    "failure_stage": FAILURE_STAGES,
+    "provider_backend": PROVIDER_BACKENDS,
     "remote_error_code": {
         "authentication_error", "authorization_error", "unclassified",
     },
@@ -287,6 +293,14 @@ def _validate_ref(value: Any) -> None:
 def _validate_value(name: str, value: Any) -> None:
     if isinstance(value, (dict, list, tuple, set, bytes, bytearray)):
         raise UnsafeEvent("event values must be scalar control metadata")
+    if name == "system_error_code":
+        if value is not None and (type(value) is not int or not -(2**31) <= value < 2**31):
+            raise UnsafeEvent("system error must be an OSStatus integer or null")
+        return
+    if name == "network_request_sent":
+        if value is not None and type(value) is not bool:
+            raise UnsafeEvent("network activity must be boolean or unknown")
+        return
     if name in _INTEGER_FIELDS:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise UnsafeEvent("event count/status fields must be non-negative integers")
@@ -426,9 +440,11 @@ class ControlEventWriter:
         stream: TextIO,
         *,
         clock: Callable[[], str] = utc_now,
+        observer: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> None:
         self._stream = stream
         self._clock = clock
+        self._observer = observer
         self._lock = threading.Lock()
 
     def emit(
@@ -452,6 +468,8 @@ class ControlEventWriter:
         with self._lock:
             self._stream.write(line)
             self._stream.flush()
+        if self._observer is not None:
+            self._observer(record)
         return record
 
 

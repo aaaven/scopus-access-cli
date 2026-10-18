@@ -62,7 +62,7 @@ class SimpleScriptTests(unittest.TestCase):
         self.assertEqual(before, self.fixture.ledger.rows("task_reservation"))
         operations = list(self.fixture.manifest.project_output_dir.glob("operations/*.json"))
         self.assertEqual(len(operations), 1)
-        self.assertEqual(json.loads(operations[0].read_text())["queries"]["scopus_search"]["query"], QUERY)
+        self.assertEqual(json.loads(operations[0].read_text())["queries"]["scopus_search"]["query"], QUERY + "\n")
         for control in (self.fixture.database.parent / ".scopus-access" / "fetch").rglob("*.json"):
             self.assertNotIn(QUERY, control.read_text())
         self.assertTrue(list((self.fixture.database.parent / ".scopus-access" / "fetch").glob("*/task.json")))
@@ -80,7 +80,7 @@ class SimpleScriptTests(unittest.TestCase):
         self.assertEqual(sent.netloc, "api.elsevier.com")
         self.assertEqual(sent.path, "/content/search/scopus")
         self.assertEqual(parse_qs(sent.query), {
-            "query": [QUERY], "view": ["STANDARD"], "count": ["200"], "start": ["0"],
+            "query": [QUERY + "\n"], "view": ["STANDARD"], "count": ["200"], "start": ["0"],
         })
 
     def test_bounds_and_invalid_query_fail_before_secret_or_transport(self):
@@ -89,7 +89,7 @@ class SimpleScriptTests(unittest.TestCase):
             self.assertEqual(code, cli.EXIT_VALIDATION)
         self.query_file.write_bytes(b"\xff")
         self.assertEqual(self.invoke(local_only=True)[0], cli.EXIT_VALIDATION)
-        self.query_file.write_text("first\nsecond")
+        self.query_file.write_text("first\x00second")
         self.assertEqual(self.invoke(local_only=True)[0], cli.EXIT_VALIDATION)
 
     def test_two_offset_pages_advance_start_without_enabling_cursor(self):

@@ -629,16 +629,12 @@ class RestrictedArtifactStore:
         release = _safe_id(release_id, "release_id")
         if task_type not in {"survey_run", "preflight"}:
             raise ArtifactError("search task type is invalid")
-        if (
-            not isinstance(query, str) or not query.strip()
-            or len(query.encode("utf-8")) > 32768
-            or any(ord(character) < 32 for character in query)
-        ):
-            raise ArtifactError("search operation is invalid")
+        from .query import search_operation
+        operation = search_operation(query)
         raw = (json.dumps({
             "schema_version": "1.0", "project_id": project, "task_id": task,
             "task_type": task_type, "release_id": release,
-            "queries": {"scopus_search": {"query": query}},
+            "queries": {"scopus_search": operation},
         }, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
         relative = Path("operations") / (task + ".json")
         path = self._atomic_write(relative, raw, immutable=True)

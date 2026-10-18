@@ -20,7 +20,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, TextI
 
 from .artifacts import RestrictedArtifactStore, RunReceipt
 from .client import UrllibTransport
-from .errors import LiveCapabilityLocked, ScopusAccessError, ValidationError
+from .errors import (LiveCapabilityLocked, ScopusAccessError, ValidationError,
+                     SecretProviderError, QueryValidationError, secret_error_details, FAILURE_STAGES)
 from .events import ControlEventWriter
 from .integration import (
     ElsevierRunnerTransport,
@@ -42,6 +43,7 @@ from .quota import QuotaState, ReservationRequest, evaluate_candidate, utc_now
 from .runner import GovernedRunner, RunAuthorization
 from .secrets import MacOSKeychainSecretProvider
 from .security import execution_run_id, reject_symlink_components, safe_identifier
+from .terminal import emit_human
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -154,6 +156,7 @@ def _write_control(stream: TextIO, record: Mapping[str, Any]) -> None:
         raise RuntimeError("control record exceeds the local size limit")
     stream.write(line + "\n")
     stream.flush()
+    emit_human(record)
 
 
 def _result(command: str, status: str, **fields: Any) -> Dict[str, Any]:
@@ -322,6 +325,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             output_roots_configured=len(roots),
             output_roots_existing=sum(1 for root in roots if root.is_dir()),
             keychain_command_present=Path("/usr/bin/security").is_file(),
+            keychain_backend="macos_security_framework",
             live_capability_enabled=policy.live_capability_enabled,
             network_probe=False,
             secret_read=False,
@@ -553,7 +557,7 @@ def _execute_run(
             ),
             ledger=LedgerExecutionAdapter(ledger, run_authorization),
             artifacts=artifact_store,
-            events=ControlEventWriter(_Tee((sys.stdout, event_file))),
+            events=ControlEventWriter(_Tee((sys.stdout, event_file)), observer=emit_human),
         )
         args.runner_entered = True
         return runner.run(run_authorization)
@@ -879,6 +883,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         return int(args.handler(args))
     except ScopusAccessError as exc:
+        diagnostics = (secret_error_details(exc) if isinstance(exc, SecretProviderError)
+                       else exc.control_details() if isinstance(exc, QueryValidationError) else {})
+        stage = getattr(exc, "failure_stage", None)
+        if stage in FAILURE_STAGES:
+            diagnostics["failure_stage"] = stage
+        if isinstance(exc, SecretProviderError):
+            diagnostics["network_request_sent"] = False if not getattr(args, "runner_entered", False) else None
         _write_control(
             sys.stdout,
             _result(
@@ -886,6 +897,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "locked" if isinstance(exc, LiveCapabilityLocked) else "error",
                 code=exc.code,
                 message=str(exc),
+                **diagnostics,
                 **_failure_execution_counts(args),
             ),
         )
@@ -904,6 +916,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "error",
                 code="LOCAL_CONTROL_ERROR",
                 message="Local control-plane operation failed.",
+                **({"failure_stage": exc.failure_stage} if getattr(exc, "failure_stage", None) in FAILURE_STAGES else {}),
                 **_failure_execution_counts(args),
             ),
         )
