@@ -145,6 +145,12 @@ class ReleaseEvidence:
     query_manifest_sha256: str
     execution_control_sha256: str
 
+    def has_expired(self, now: Optional[datetime] = None) -> bool:
+        if self.expires_at_utc is None:
+            return False
+        value = self.expires_at_utc.replace("Z", "+00:00")
+        return (now or datetime.now(timezone.utc)) >= datetime.fromisoformat(value)
+
     def is_current(self, now: Optional[datetime] = None) -> bool:
         current = now or datetime.now(timezone.utc)
         approved_raw = (

@@ -5,6 +5,7 @@ import runpy
 import shutil
 import socket
 import sys
+import time
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
@@ -47,6 +48,9 @@ with ExitStack() as stack:
             assert os.environ.get("SCOPUS_TEST_LOCAL_ONLY") != "1", "unexpected credential provider"
 
         def get_api_key(self, alias):
+            if os.environ.get("SCOPUS_TEST_PROVIDER_ERROR") == "1":
+                raise secrets.SecretProviderError(reason="interaction_not_allowed", stage="credential_read",
+                                                  backend="macos_security_framework", system_error_code=-25308)
             return secrets.SecretValue(secret)
 
     class Transport:
@@ -55,6 +59,13 @@ with ExitStack() as stack:
 
         def send(self, request, *, wire_capability=None):
             assert request.headers["X-ELS-APIKey"] == secret.decode()
+            if os.environ.get("SCOPUS_TEST_WIRE_COUNTER"):
+                fd = os.open(os.environ["SCOPUS_TEST_WIRE_COUNTER"], os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                try:
+                    os.write(fd, b"sent\n")
+                finally:
+                    os.close(fd)
+                time.sleep(0.1)
             body = {"search-results": {"entry": [{"dc:identifier": "SYNTHETIC-INSTALLED-ID"}],
                                       "opensearch:totalResults": "1", "opensearch:startIndex": "0"}}
             return TransportResponse(status=200, headers={

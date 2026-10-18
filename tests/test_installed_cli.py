@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import tempfile
+import sqlite3
 import unittest
 from pathlib import Path
 
@@ -140,6 +141,54 @@ class InstalledCliTests(unittest.TestCase):
             code, rows = self.invoke(child, "search", "--query-file", str(query), environment=env)
             self.assertEqual(code, 2, rows)
         self.assertFalse(list((self.root / ".scopus-access/runs").iterdir()))
+
+    def test_two_installed_processes_resume_unused_preflight_only_one_sends(self):
+        initialized = self.initialize()
+        query = self.query()
+        query.write_bytes(b'\r\n(\n\tSYNTHETIC_INSTALLED_QUERY\r\n)\n')
+        code, rows = self.invoke(self.root, "check", "--query-file", str(query), "--execute-live", local=False,
+                                 environment={"SCOPUS_TEST_PROVIDER_ERROR": "1"})
+        self.assertEqual(code, 6, rows)
+        self.assertEqual(rows[-1]["requests_attempted"], 0)
+        self.assertEqual(rows[-1]["stop_reason"], "secret_unavailable")
+        info_path = rows[0]["run_info_path"]
+        info = json.loads(Path(info_path).read_text())
+        counter = self.base / "wire-counter"
+        env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.defpath,
+                   PYTHONDONTWRITEBYTECODE="1", SCOPUS_TEST_LOCAL_ONLY="0",
+                   SCOPUS_TEST_PROVIDER_ERROR="0", SCOPUS_TEST_WIRE_COUNTER=str(counter),
+                   PYTHONPATH=str(self.base / "missing-source"))
+        processes = []
+        try:
+            for _ in range(2):
+                processes.append(subprocess.Popen(
+                    [str(self.python), "-I", str(self.harness), "scopus-access", "resume",
+                     "--run-info", info_path, "--execute-live"], cwd=str(self.root), env=env,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+            codes = []
+            for process in processes:
+                out, err = process.communicate(timeout=30)
+                self.assertNotIn(b"SYNTHETIC_INSTALLED_CLI_CREDENTIAL", out + err)
+                codes.append(process.returncode)
+            self.assertEqual(sorted(codes), [0, 2])
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+        self.assertEqual(counter.read_bytes(), b"sent\n")
+        code, rows = self.invoke(self.root, "usage")
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]["requests_attempted"], 1)
+        with sqlite3.connect(initialized["database_path"]) as db:
+            seeds = db.execute("SELECT reservation_id FROM task_reservation_ledger WHERE event_seq=1 AND admission_decision='ADMITTED'").fetchall()
+            self.assertEqual(len(seeds), 1)
+        code, rows = self.invoke(self.root, "status", "--run-info", info_path)
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]["reservation_state"], "COMPLETED")
+        code, rows = self.invoke(self.root, "export", "--run-info", info_path)
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]["records_count"], 1)
 
     def test_installed_same_names_repeat_and_rename_preserve_distinct_folder_identity(self):
         first = self.initialize()

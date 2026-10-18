@@ -35,7 +35,7 @@ python3 -m venv .venv-build
 validation_root="$(mktemp -d)"
 python3 -m venv "$validation_root/tool"
 "$validation_root/tool/bin/python" -m pip install --no-index --no-deps --no-cache-dir \
-  "$PWD/dist/uaeu_scopus_access_layer-0.3.2-py3-none-any.whl"
+  "$PWD/dist/uaeu_scopus_access_layer-0.3.3-py3-none-any.whl"
 export SCOPUS_TEST_INSTALLED_PYTHON="$validation_root/tool/bin/python"
 export SCOPUS_TEST_INSTALLED_BIN="$validation_root/tool/bin"
 
@@ -82,12 +82,14 @@ checkpoint、receipt、运行日志、真实查询、实际 API key 或本机验
 
 ## 上传到自己的远端
 
-此交付目录已是独立 Git 仓库，未配置远端。先在自己的 Git 托管平台建立空仓库，
-再将下列占位地址换成实际地址：
+此交付目录是独立 Git 仓库。先检查已有远端；如果还没有 origin，在自己的 Git
+托管平台建立空仓库，再将下列占位地址换成实际地址：
 
 ```sh
 cd /path/to/scopus-access-cli
 git status --short
+git remote -v
+# 仅在尚未配置 origin 时添加
 git remote add origin "YOUR_REPOSITORY_URL"
 git push -u origin HEAD:main
 ```

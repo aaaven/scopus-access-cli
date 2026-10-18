@@ -16,7 +16,7 @@ import re
 import stat
 import uuid
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
@@ -649,6 +649,50 @@ class RestrictedArtifactStore:
             actual = set()
         if expected != actual:
             raise ArtifactError("raw page inventory does not match its manifest")
+
+    @contextmanager
+    def resume_lock(self, run_id: str):
+        """Serialize resume validation through final receipt publication.
+
+        Separate from the short request lock and artifact write lock: both are
+        acquired by the runner while this per-execution process lock is held.
+        """
+        run = _safe_id(run_id, "run_id")
+        with self._parent_fd(Path("locks") / (run + ".resume.lock"), create=True) as (parent, name):
+            flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            descriptor = os.open(name, flags, 0o600, dir_fd=parent)
+            try:
+                self._require_regular(descriptor)
+                os.fchmod(descriptor, 0o600)
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
+
+    def require_no_response_pages(self, run_id: str) -> None:
+        """Reject listed pages and unlisted raw files, including symlink escapes."""
+        if self.load_response_records(run_id):
+            raise ArtifactError("response pages already exist")
+        self._check_raw_inventory(run_id, ())
+
+    def load_receipt(self, run_id: str) -> Optional[RunReceipt]:
+        try:
+            encoded = self._read_relative(Path(self.receipt_ref(run_id)), max_bytes=_RECEIPT_LIMIT)
+        except FileNotFoundError:
+            return None
+        try:
+            data = json.loads(encoded.decode("utf-8"))
+            expected = {item.name for item in fields(RunReceipt)} | {"schema_version"}
+            if not isinstance(data, dict) or set(data) != expected or data.pop("schema_version") != ARTIFACT_SCHEMA_VERSION:
+                raise ValueError()
+            receipt = RunReceipt(**data)
+            receipt.as_json()
+            if receipt.run_id != run_id:
+                raise ValueError()
+            return receipt
+        except (UnicodeError, ValueError, TypeError, AttributeError):
+            raise ArtifactError("run receipt is invalid") from None
 
     def require_unstarted_execution(self, run_id: str) -> None:
         """Reject stored execution evidence before continuing an unused bucket."""

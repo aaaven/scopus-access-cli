@@ -63,6 +63,14 @@ class LiveCapabilityLocked(PolicyViolation):
         super().__init__(message, code="LIVE_CAPABILITY_LOCKED")
 
 
+class ReleaseExpired(LiveCapabilityLocked):
+    """The original grant expired; resume must not renew it implicitly."""
+
+    def __init__(self):
+        super().__init__("The original authorization has expired; explicit reauthorization is required. Resume cannot renew it.")
+        self.code = "RELEASE_EXPIRED"
+
+
 PROVIDER_REASONS = frozenset({
     "credential_not_found", "interaction_not_allowed", "access_denied",
     "keychain_timeout", "keychain_error", "credential_already_exists",

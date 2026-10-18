@@ -15,7 +15,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, TYPE_CHECKING
 if TYPE_CHECKING:
     from .project import ProjectBinding
 
-from .errors import LiveCapabilityLocked, PolicyViolation, ValidationError
+from .errors import LiveCapabilityLocked, PolicyViolation, ValidationError, ReleaseExpired
 from .ledger import Ledger, LedgerError
 from .security import (
     SENSITIVE_NAME_RE,
@@ -594,6 +594,8 @@ def authorize_live_execution(
     release = manifest.release_evidence
     if release.synthetic or release.status != "APPROVED":
         raise LiveCapabilityLocked("Live execution requires non-synthetic APPROVED release evidence.")
+    if release.has_expired():
+        raise ReleaseExpired()
     if not release.is_current():
         raise LiveCapabilityLocked("The approved project release is not currently effective.")
     trusted_release = policy.approved_release_pin(

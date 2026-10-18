@@ -1,7 +1,7 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.3.2**。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.3.3**。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
 工具不负责选题、corpus 建立、筛选、科学去重或文献计量分析。
@@ -28,7 +28,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.3.2-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.3.3-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help
@@ -110,6 +110,12 @@ scopus-access resume --run-info /path/to/execution/run-info.json --execute-live
 `status` 和 `export` 全离线。`resume` 默认只检查状态，显式执行也只沿用原任务、
 分页位置和剩余预算；不增加额度、不续期授权、不重发证据不明的请求。
 已完成或已准入的同一个预览不能当作新请求重复消费。
+
+若首次 `check` 已准入，但读取钥匙串失败并报告 `secret_unavailable`、请求尝试为 0，
+修复系统授权后使用其 **execution run-info** 执行 `resume --execute-live`。
+工具沿用原预约的一次请求、一条记录、零重试；不会再申请首次预检名额。
+任何发送尝试、结果页、原文/配置 hash 改变或证据不完整都拒绝此恢复。
+原授权过期会返回 `RELEASE_EXPIRED`，须显式重新授权；resume 本身不会续期。
 
 ## 工程数据与凭据
 

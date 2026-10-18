@@ -167,6 +167,22 @@ scopus-access resume --run-info /path/to/execution/run-info.json --execute-live
 过期、跨配额窗口、已发送但证据缺失/冲突等情况均停止，不自动重发。
 不要以重新执行 search 的方式假装延续原预算。
 
+### 首次 check 在读取 Keychain 时失败
+
+若 execution 记录是 `secret_unavailable`，且 `requests_attempted=0`、`pages_completed=0`，
+可在解决 macOS 钥匙串授权后按上面的 `resume --run-info ... --execute-live` 继续。
+请使用失败执行输出的 run-info，保留原 policy、冻结查询、数据库和受限输出目录。
+支持多行查询；恢复只读取原冻结包的来源文本、发送文本及双 hash，不重新读入新的查询。
+
+专用预检恢复核验原授权、预约、失败回执、checkpoint 和所有关联 hash；用量日志须无
+任何发送尝试，raw 目录须无响应文件，包括没有登记的文件。只允许 STANDARD Search、
+一条记录、总共一次请求、零自动重试。重新执行首次 check 不能绕开已占用标记；不要
+删库、改任务类型或清除历史。同一预检的两个本机恢复进程经锁串行校验和执行，第二个
+不能重发或把完成状态覆盖为旧失败状态。普通 survey_run 恢复路径保持原有预算逻辑。
+
+`RELEASE_EXPIRED` 明确表示原授权已过期，需要另行显式重新授权；当前没有自动续期或
+renew 命令，工具会保留未用预约并停止，不将重新批准视为新增一次额度。
+
 ## 9. 退出码和处理
 
 | 退出码 | 含义 |

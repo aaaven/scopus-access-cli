@@ -54,6 +54,10 @@ def human_message(record):
         activity = "未发出网络请求。" if sent is False else "请求活动请查看原运行记录。"
         return "%s失败：%s%s。%s%s" % (step, reason if reason in _REMEDIES else "keychain_error", suffix, explanation, activity)
     if status in {"error", "locked"}:
+        if record.get("code") == "RELEASE_EXPIRED":
+            return "原任务授权已过期；需要显式重新授权。resume 不会续期或增加额度，本次未发送请求。"
+        if record.get("code") == "PREFLIGHT_RESUME_DENIED":
+            return "预检不能恢复：需原预约、零请求尝试、零结果页且失败原因为 secret_unavailable。已发送或证据不完整时不会重发。"
         if record.get("code") == "QUERY_INVALID_CONTROL":
             return "查询含禁止的控制字符 %s，位于第 %s 行、第 %s 列；请修改原文件。未联网。" % (
                 record.get("codepoint", "未知"), _count(record.get("line")), _count(record.get("column")))

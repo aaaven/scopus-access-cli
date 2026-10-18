@@ -1,6 +1,6 @@
 # Scopus Access Tool：通用本地 CLI 架构
 
-更新：2026-10-19。当前实现为 0.3.2。初始化、工程识别、共享本机状态及
+更新：2026-10-19。当前实现为 0.3.3。初始化、工程识别、共享本机状态及
 check/search/execute/status/export/resume/usage 已接通并完成离线验证。实际用法见
 [USAGE.md](USAGE.md)，测试记录见 [VALIDATION.md](VALIDATION.md)。
 
@@ -113,6 +113,11 @@ check 是显式单请求路径：STANDARD、count=1、零重试。UNVERIFIED、�
 预览固定查询包、参数和控制 hash。execute 追加明确批准的后继控制文件，保留原预览；
 任务 ID、查询 hash 和请求预算不变，已准入 release 不能重跑消费。resume 必须复用
 原 reservation 和已核验分页位置，不扩展预算；默认只读状态，显式执行才可能联网。
+专用 build_preflight_resume_authorization 仅接受原预检的 secret_unavailable、零请求、
+零完成页和无 raw 文件状态，验证 checkpoint、receipt、来源/传输与授权 hash。
+从原 seed 预约直接签发运行许可，不调用首次 admission；cap 仍为一次请求、一条记录、
+零重试。每个执行的恢复锁覆盖校验到最终回执发布，请求锁仍负责原子计费与发送协调。
+任何发送尝试或授权过期均拒绝该路径；过期单独报 RELEASE_EXPIRED，不自动续期。
 status/export/usage 全离线。其他已绑定工程不能使用本工程的 run-info。
 
 原始响应与 checkpoint 仍由受限 artifact store 校验保存。新额度事件是本机记录，

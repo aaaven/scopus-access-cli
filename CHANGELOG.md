@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.3 — 2026-10-19
+
+- Dispatch resume by the original validated task type. A dedicated minimal
+  preflight recovery path reuses its reservation only after secret_unavailable
+  with zero attempts/pages, unchanged hash pins and no raw response files.
+- Serialize preflight recovery validation through receipt publication across
+  processes; preserve the one-request, one-record, zero-retry boundary and
+  reject recorded attempts instead of repeating initial admission.
+- Report expired releases as RELEASE_EXPIRED, requiring explicit reauthorization
+  without automatic renewal. Existing survey recovery behavior is retained.
+
 ## 0.3.2 — 2026-10-19
 
 - Accept multiline UTF-8 queries, CRLF and tabs without trimming or rewriting

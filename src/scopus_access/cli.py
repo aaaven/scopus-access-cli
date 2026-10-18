@@ -28,6 +28,7 @@ from .integration import (
     LedgerExecutionAdapter,
     admit_authorized_manifest,
     build_resume_authorization,
+    build_preflight_resume_authorization,
     build_run_authorization,
 )
 from .ledger import Ledger
@@ -499,10 +500,11 @@ def _open_secure_append(path: Path) -> TextIO:
     return os.fdopen(descriptor, "a", encoding="utf-8", closefd=True)
 
 
-def _live_context(args: argparse.Namespace, task_type: str) -> tuple:
+def _live_context(args: argparse.Namespace, task_type) -> tuple:
     policy, manifest = _load_inputs(args)
     args.keychain_service = policy.keychain_service if policy.project_binding else None
-    if manifest.task_type != task_type:
+    allowed_types = (task_type,) if isinstance(task_type, str) else task_type
+    if manifest.task_type not in allowed_types:
         raise ValidationError(
             "The command requires its own task-type-specific release.",
             code="WRONG_TASK_TYPE",
@@ -674,9 +676,18 @@ def _cmd_resume(args: argparse.Namespace) -> int:
     if any(value is None for value in (args.manifest, args.policy, args.run_id, args.api_name)):
         raise ValidationError("Resume requires a run info file or complete legacy arguments.")
     _, manifest, _, authorization, artifacts, ledger = _live_context(
-        args, TASK_SURVEY_RUN
+        args, (TASK_SURVEY_RUN, TASK_PREFLIGHT)
     )
     parent_run_id = safe_identifier(args.run_id, field="parent_run_id")
+    if manifest.task_type == TASK_PREFLIGHT:
+        execution_id = execution_run_id(manifest.project_id, manifest.task_id, manifest.release_id,
+                                        parent_run_id, args.api_name)
+        with artifacts.resume_lock(execution_id):
+            capability = build_preflight_resume_authorization(
+                ledger=ledger, manifest=manifest, authorization=authorization,
+                artifacts=artifacts, run_id=parent_run_id, api_name=args.api_name,
+            )
+            return _receipt_exit(_execute_run(args, manifest, authorization, artifacts, ledger, capability))
     capability = build_resume_authorization(
         ledger=ledger, manifest=manifest, authorization=authorization,
         artifacts=artifacts, run_id=parent_run_id, api_name=args.api_name,

@@ -32,6 +32,7 @@ from .errors import (
     TransportError,
     UnsafeRequestError,
     ValidationError,
+    ReleaseExpired,
 )
 from .ledger import AdmissionResult, Ledger, LedgerError, ResponseResult
 from .manifest import TaskManifest, load_verified_query_manifest
@@ -327,55 +328,7 @@ def build_run_authorization(
     else:
         raise IntegrationError("UNSUPPORTED_TASK_TYPE")
 
-    ai_released = manifest.content_egress == CONTENT_AUTHORIZED_AI_SESSION
-    execution_id = execution_run_id(
-        manifest.project_id,
-        manifest.task_id,
-        manifest.release_id,
-        run_id,
-        api_name,
-    )
-    capability = _issue_run_authorization(
-        run_id=execution_id,
-        parent_run_id=run_id,
-        project_id=manifest.project_id,
-        task_id=manifest.task_id,
-        release_id=manifest.release_id,
-        reservation_id=reservation_id,
-        api_key_alias=alias,
-        api_name=api_name,
-        endpoint_class=API_SPECS[api_name].endpoint_class,
-        view=plan.view,
-        page_size=plan.page_size,
-        max_pages=max_pages,
-        max_requests=plan.request_limit,
-        retry_allowance=plan.retry_allowance,
-        content_egress=manifest.content_egress,
-        admitted=True,
-        release_validated=True,
-        query_manifest_sha256=manifest.query_manifest_sha256,
-        execution_control_sha256=manifest.execution_control_sha256,
-        control_database_path=str(
-            Path(permit.control_database_path).resolve(strict=False)
-        ),
-        control_database_instance_id=permit.control_database_instance_id,
-        control_database_device=permit.control_database_device,
-        control_database_inode=permit.control_database_inode,
-        release_evidence_path=str(manifest.release_evidence.path),
-        release_evidence_sha256=manifest.release_evidence.sha256,
-        release_approved_at_utc=manifest.release_evidence.approved_at_utc,
-        release_expires_at_utc=manifest.release_evidence.expires_at_utc,
-        topology_evidence_path=permit.topology_evidence_path,
-        topology_evidence_sha256=permit.topology_evidence_sha256,
-        ai_license_evidence_path=permit.ai_license_evidence_path,
-        ai_license_evidence_sha256=permit.ai_license_evidence_sha256,
-        ai_route_evidence_path=permit.ai_route_evidence_path,
-        ai_route_evidence_sha256=permit.ai_route_evidence_sha256,
-        license_evidence_verified=ai_released,
-        ai_route_released=ai_released,
-    )
-    capability.validate()
-    return capability
+    return _manifest_run_capability(manifest, permit, reservation_id, run_id, api_name, max_pages)
 
 
 def build_resume_authorization(
@@ -488,6 +441,13 @@ def build_resume_authorization(
             reserved_remaining=int(row["reserved_remaining"]),
             parent_run_id=run_id,
         )
+    return _manifest_run_capability(manifest, permit, reservation_id, run_id, api_name, max_pages)
+
+
+def _manifest_run_capability(manifest, permit, reservation_id, run_id, api_name, max_pages):
+    plan = manifest.request_for_api(api_name)
+    alias = permit.key_aliases[api_name]
+    execution_id = execution_run_id(manifest.project_id, manifest.task_id, manifest.release_id, run_id, api_name)
     ai_released = manifest.content_egress == CONTENT_AUTHORIZED_AI_SESSION
     capability = _issue_run_authorization(
         run_id=execution_id,
@@ -530,6 +490,100 @@ def build_resume_authorization(
     )
     capability.validate()
     return capability
+
+
+def build_preflight_resume_authorization(
+    *, ledger: Ledger, manifest: TaskManifest, authorization: ExecutionAuthorization,
+    artifacts: RestrictedArtifactStore, run_id: str, api_name: str,
+) -> RunAuthorization:
+    """Continue ONLY an admitted one-record preflight stopped during credential access.
+
+    This function never admits a task. The original reservation and grant must
+    still exist, with zero attempts and a matching secret_unavailable receipt.
+    CLI callers hold artifacts.resume_lock through validation AND execution.
+    """
+    if manifest.release_evidence.has_expired():
+        raise ReleaseExpired()
+    _manifest_matches_authorization(manifest, authorization)
+    permit = require_execution_authorization(authorization)
+    _require_permit_database_identity(ledger, permit)
+    load_verified_query_manifest(manifest)
+    for path, digest in (
+        (permit.topology_evidence_path, permit.topology_evidence_sha256),
+        (permit.ai_license_evidence_path, permit.ai_license_evidence_sha256),
+        (permit.ai_route_evidence_path, permit.ai_route_evidence_sha256),
+    ):
+        if path is not None:
+            read_verified_json(path, digest, description="authorization evidence")
+    if (manifest.task_type != TASK_PREFLIGHT or len(manifest.requests) != 1
+            or api_name != API_SCOPUS_SEARCH):
+        raise ValidationError("Only an original minimal Search preflight can use this recovery path.", code="PREFLIGHT_RESUME_DENIED")
+    plan = manifest.request_for_api(api_name)
+    if (plan.view != "STANDARD" or plan.page_size != 1 or plan.request_limit != 1
+            or plan.estimated_requests_with_margin != 1 or plan.retry_allowance != 0
+            or plan.pagination_mode != "offset" or plan.forecast_pagination != 1
+            or plan.forecast_detail_retrieval != 0 or plan.forecast_validation != 0):
+        raise ValidationError("Preflight recovery retains one STANDARD request, one record and zero retries.", code="PREFLIGHT_RESUME_DENIED")
+    alias = permit.key_aliases.get(api_name)
+    if alias is None or ledger.current_project_key_alias(manifest.project_id) != alias:
+        raise IntegrationError("PROJECT_KEY_ALIAS_MISMATCH")
+    seed_rows = [row for row in ledger.rows("task_reservation")
+                 if row["event_seq"] == 1 and row["project_id"] == manifest.project_id
+                 and row["task_id"] == manifest.task_id and row["release_id"] == manifest.release_id
+                 and row["run_id"] == run_id and row["api_name"] == api_name]
+    if len(seed_rows) != 1:
+        raise ValidationError("No unique original preflight reservation exists.", code="PREFLIGHT_RESUME_DENIED")
+    seed = seed_rows[0]
+    reservation_id = seed["reservation_id"]
+    row = _latest_reservation_row(ledger, reservation_id)
+    expected = {"api_key_alias": alias, "project_id": manifest.project_id,
+                "task_id": manifest.task_id, "run_id": run_id, "release_id": manifest.release_id,
+                "query_package_hash_or_ref": manifest.query_manifest_sha256,
+                "api_name": api_name, "view_name": "STANDARD", "page_size": 1,
+                "estimated_requests_with_margin": 1, "retry_allowance": 0}
+    if any(item.get(key) != value for item in (seed, row) for key, value in expected.items()):
+        raise IntegrationError("PERSISTED_RESERVATION_MISMATCH")
+    history = [item for item in ledger.rows("task_reservation") if item["reservation_id"] == reservation_id]
+    if (seed["admission_reason"] not in {"AUTHORIZED_MINIMAL_PREFLIGHT", "AUTHORIZED_BOUNDED_DIAGNOSTIC"}
+            or seed["admission_decision"] != "ADMITTED" or row["event_seq"] != 1
+            or row["admission_reason"] != seed["admission_reason"]
+            or row["admission_decision"] != "ADMITTED" or row["reserved_remaining"] != 1
+            or row["completed_or_released_at_utc"] is not None
+            or any(item["actual_requests"] != 0 for item in history)
+            or any(item["reservation_id"] == reservation_id for item in ledger.rows("request_usage"))):
+        raise ValidationError("The preflight is no longer unused; any recorded attempt prevents recovery.", code="PREFLIGHT_RESUME_DENIED")
+    execution_id = execution_run_id(manifest.project_id, manifest.task_id, manifest.release_id, run_id, api_name)
+    try:
+        checkpoint = artifacts.load_checkpoint(execution_id)
+        receipt = artifacts.load_receipt(execution_id)
+        artifacts.require_no_response_pages(execution_id)
+        if (checkpoint is None or receipt is None or checkpoint.complete
+                or checkpoint.completed_pages != 0 or checkpoint.requests_attempted != 0
+                or checkpoint.retries_used != 0 or checkpoint.next_page != 1
+                or checkpoint.next_cursor is not None or checkpoint.last_artifact_sha256 is not None):
+            raise ArtifactError("zero-attempt checkpoint and receipt required")
+        receipt_expected = {"run_id": execution_id, "parent_run_id": run_id,
+                            "project_id": manifest.project_id, "task_id": manifest.task_id,
+                            "release_id": manifest.release_id, "reservation_id": reservation_id,
+                            "api_name": api_name, "status": "failed", "completeness": "not_started",
+                            "stop_reason": "secret_unavailable", "pages_completed": 0,
+                            "requests_attempted": 0, "retries_used": 0,
+                            "records_count": 0, "records_pages": 0}
+        if any(getattr(receipt, key) != value for key, value in receipt_expected.items()):
+            raise ArtifactError("original failure receipt does not match")
+        if artifacts.manifest_digest(execution_id) != (receipt.artifact_manifest_ref, receipt.artifact_manifest_sha256):
+            raise ArtifactError("receipt manifest hash does not match")
+        if receipt.records_ref is not None:
+            records = artifacts._read_relative(Path(receipt.records_ref), max_bytes=8192)
+            if records != b"" or hashlib.sha256(records).hexdigest() != receipt.records_sha256:
+                raise ArtifactError("receipt records hash does not match")
+        _validate_resume_chain(ledger=ledger, artifacts=artifacts, checkpoint=checkpoint,
+                               manifest=manifest, reservation_id=reservation_id, api_name=api_name,
+                               max_pages=1, max_requests=1, retry_allowance=0, reserved_remaining=1,
+                               parent_run_id=run_id)
+    except (ArtifactError, OSError, IntegrationError):
+        raise ValidationError("Preflight recovery requires matching zero-page evidence for secret_unavailable and no raw responses.", code="PREFLIGHT_RESUME_DENIED") from None
+    return _manifest_run_capability(manifest, permit, reservation_id, run_id, api_name, 1)
 
 
 def _validate_resume_chain(
@@ -1200,5 +1254,6 @@ __all__ = [
     "LedgerExecutionAdapter",
     "admit_authorized_manifest",
     "build_resume_authorization",
+    "build_preflight_resume_authorization",
     "build_run_authorization",
 ]
