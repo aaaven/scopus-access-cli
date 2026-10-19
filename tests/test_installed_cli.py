@@ -292,10 +292,11 @@ class InstalledCliTests(unittest.TestCase):
     def test_two_installed_successor_grants_cannot_charge_same_predecessor_twice(self):
         self.initialize()
         query = self.query()
-        # The mock repeats 99: first response establishes quota, then a normal
-        # check and the one diagnostic pause on the conservative balance rule.
-        for expected in (0,5,5):
-            code, rows = self.invoke(self.root,'check','--query-file',str(query),'--execute-live',local=False)
+        # Missing telemetry still blocks. Numeric disagreements now reconcile
+        # automatically and must not be used as a source of diagnostic grants.
+        for expected in (5,5):
+            code, rows = self.invoke(self.root,'check','--query-file',str(query),'--execute-live',local=False,
+                environment={'SCOPUS_TEST_QUOTA_MISSING':'1'})
             self.assertEqual(code,expected,rows)
         source = rows[0]['run_info_path']
         drafts=[]
@@ -305,7 +306,7 @@ class InstalledCliTests(unittest.TestCase):
             drafts.append(rows[0]['run_info_path'])
         counter=self.base/'successor-counter'
         env=dict(os.environ,PATH=str(self.bin)+os.pathsep+os.defpath,PYTHONDONTWRITEBYTECODE='1',
-                 SCOPUS_TEST_LOCAL_ONLY='0',SCOPUS_TEST_WIRE_COUNTER=str(counter))
+                 SCOPUS_TEST_LOCAL_ONLY='0',SCOPUS_TEST_WIRE_COUNTER=str(counter),SCOPUS_TEST_QUOTA_MISSING='1')
         processes=[]
         try:
             for draft in drafts:
@@ -328,7 +329,60 @@ class InstalledCliTests(unittest.TestCase):
         self.assertEqual(counter.read_bytes(),b'sent\n')
         database=self.root/'.scopus-access/control.sqlite'
         with sqlite3.connect(str(database)) as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM request_usage_log WHERE record_kind='ATTEMPT'").fetchone()[0],3)
+
+
+    def test_installed_numeric_difference_automatically_continues_original_three_pages(self):
+        self.initialize()
+        query=self.query()
+        code,rows=self.invoke(self.root,'check','--query-file',str(query),'--execute-live',local=False)
+        self.assertEqual(code,0,rows)
+        counter=self.base/'min-pages-counter'
+        code,rows=self.invoke(self.root,'search','--query-file',str(query),'--max-requests','3','--page-size','1','--execute-live',
+            local=False,environment={'SCOPUS_TEST_TOTAL':'3','SCOPUS_TEST_WIRE_COUNTER':str(counter)})
+        self.assertEqual(code,0,rows)
+        completed=next(r for r in rows if r.get('event')=='run_completed')
+        self.assertEqual((completed['pages_completed'],completed['requests_attempted']),(3,3))
+        self.assertFalse(any(r.get('event')=='paused' for r in rows))
+        merged=[r for r in rows if r.get('event')=='quota_telemetry' and r['telemetry_reason']=='RATE_LIMIT_BALANCE_MIN_APPLIED']
+        self.assertEqual([r['reconciled_remaining'] for r in merged],[98,97,96])
+        self.assertEqual(counter.read_bytes(),b'sent\n'*3)
+
+    def test_two_installed_resume_callers_repair_once_and_do_not_resend_saved_page(self):
+        self.initialize()
+        query=self.query()
+        code,rows=self.invoke(self.root,'check','--query-file',str(query),'--execute-live',local=False)
+        self.assertEqual(code,0,rows)
+        code,rows=self.invoke(self.root,'search','--query-file',str(query),'--max-requests','3','--page-size','1','--execute-live',
+            local=False,environment={'SCOPUS_TEST_TOTAL':'3','SCOPUS_TEST_LEGACY_BALANCE_PAUSE':'1'})
+        self.assertEqual(code,5,rows)
+        source=rows[0]['run_info_path']
+        counter=self.base/'repair-resume-counter'
+        env=dict(os.environ,PATH=str(self.bin)+os.pathsep+os.defpath,PYTHONDONTWRITEBYTECODE='1',
+                 SCOPUS_TEST_LOCAL_ONLY='0',SCOPUS_TEST_TOTAL='3',SCOPUS_TEST_WIRE_COUNTER=str(counter))
+        processes=[]
+        try:
+            for _ in range(2):
+                processes.append(subprocess.Popen([str(self.python),'-I',str(self.harness),'scopus-access',
+                    'resume','--run-info',source,'--execute-live'],cwd=str(self.root),env=env,
+                    stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE))
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                outputs=list(pool.map(lambda process:process.communicate(timeout=30),processes))
+            codes=[p.returncode for p in processes]
+            self.assertEqual(sum(code==0 for code in codes),1,codes)
+            for out,err in outputs:
+                self.assertNotIn(b'SYNTHETIC_INSTALLED_CLI_CREDENTIAL',out+err)
+        finally:
+            for process in processes:
+                if process.poll() is None: process.kill();process.communicate()
+        self.assertEqual(counter.read_bytes(),b'sent\n'*2)
+        with sqlite3.connect(str(self.root/'.scopus-access/control.sqlite')) as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM quota_window_ledger WHERE record_kind='RETAINED_MIN_RECONCILIATION'").fetchone()[0],1)
             self.assertEqual(connection.execute("SELECT count(*) FROM request_usage_log WHERE record_kind='ATTEMPT'").fetchone()[0],4)
+        code,rows=self.invoke(self.root,'inspect','--run-info',source)
+        self.assertEqual(code,0,rows)
+        self.assertEqual(rows[0]['pages_saved'],3)
+        self.assertEqual(rows[0]['reserved_remaining'],0)
 
 
 if __name__ == "__main__":

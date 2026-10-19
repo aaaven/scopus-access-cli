@@ -1,6 +1,6 @@
 # Scopus Access Tool：通用本地 CLI 架构
 
-更新：2026-10-19。当前实现为 0.4.0。初始化、工程识别、共享本机状态及
+更新：2026-10-19。当前实现为 0.4.2。初始化、工程识别、共享本机状态及
 check/search/execute/status/export/resume/usage 已接通并完成离线验证。实际用法见
 [USAGE.md](USAGE.md)，测试记录见 [VALIDATION.md](VALIDATION.md)。
 
@@ -209,3 +209,18 @@ the latest completed predecessor. The approved release pins that predecessor;
 the existing transactional admission arbitrates concurrent drafts. Original
 reservations and saved pages remain unchanged. Authentication stays API-key
 only; additional credentials and a live reference comparator remain future work.
+
+## 0.4.2 minimum balance reconciliation
+
+Valid same-window responses atomically retain the smaller of the server
+observation and the latest already-charged local balance. Raw server values
+stay separate from effective balances; outstanding unspent reservations are
+subtracted once for new admissions. Outcomes do not charge again, and larger
+or out-of-order observations cannot refill a window. The difference emits a
+non-blocking fixed-shape event while original pagination continues within its
+budget. A supported offline reconcile entry validates retained telemetry,
+saved-page hashes and attempt/outcome linkage before appending one successor
+for an old numeric-only pause. Repeated recovery is idempotent; resume also
+uses this correction before executing its original unexpired authorization.
+Normal missing/invalid-window, actual capacity, budget and access gates remain.
+See [QUOTA-RECONCILIATION.md](QUOTA-RECONCILIATION.md) for the balance contract.

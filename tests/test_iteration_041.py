@@ -18,7 +18,7 @@ class IterationTests(unittest.TestCase):
     invoke = fixtures.LocalCliTests.invoke
     check = fixtures.LocalCliTests.check
 
-    def test_same_window_stale_balance_reports_exact_reason_without_refund(self):
+    def test_same_window_stale_balance_reports_minimum_without_pause_or_refund(self):
         self.check()
         original = self.wire.send
         def cached(request, **kwargs):
@@ -27,16 +27,18 @@ class IterationTests(unittest.TestCase):
                 'X-RateLimit-Reset':'2000000000'})
         self.wire.send = cached
         code, rows = self.invoke('search','--query-file',str(self.query),'--max-requests','2','--page-size','1','--execute-live')
-        self.assertEqual(code,5,rows)
+        self.assertEqual(code,0,rows)
         telemetry = [r for r in rows if r.get('event') == 'quota_telemetry'][-1]
-        self.assertEqual(telemetry['telemetry_reason'],'RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING')
+        self.assertEqual(telemetry['telemetry_reason'],'RATE_LIMIT_BALANCE_MIN_APPLIED')
+        self.assertEqual(telemetry['reconciled_remaining'],98)
         self.assertEqual(telemetry['quota_remaining'],99)
         self.assertEqual(telemetry['local_remaining_after_attempt'],98)
         source = rows[0]['run_info_path']
         code, inspected = self.invoke('inspect','--run-info',source,local=True)
         self.assertEqual(code,0,inspected)
         self.assertEqual(inspected[0]['telemetry'],telemetry)
-        self.assertEqual(inspected[0]['current_bucket_reason'],telemetry['telemetry_reason'])
+        self.assertEqual(inspected[0]['quota_state'],'NORMAL')
+        self.assertFalse(any(r.get('event')=='paused' for r in rows))
         self.assertEqual(inspected[0]['pages_saved'],1)
         self.assertEqual(self.ledger.quota_status(self.policy.key_alias_for(self.policy.project_binding.project_id,'scopus_search'),'scopus_search').effective_remaining,98)
         code, _ = self.invoke('resume','--run-info',source,'--execute-live')

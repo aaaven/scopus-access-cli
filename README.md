@@ -1,7 +1,7 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.4.1**。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.4.2**。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
 工具不负责选题、corpus 建立、筛选、科学去重或文献计量分析。
@@ -28,7 +28,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.4.1-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.4.2-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help
@@ -212,7 +212,31 @@ initialize each project, preview first, and use `--execute-live` for explicit
 bounded execution. Runtime dependencies: Python standard library only.
 
 
-## 0.4.1：余额不一致与独立诊断
+## 0.4.2：有效同窗口余额取小值并自动继续
+
+有效且同一凭据引用/API/窗口的响应现在自动使用
+`min(server_remaining, local_remaining_after_attempt)`。差异输出为非阻断的
+`RATE_LIMIT_BALANCE_MIN_APPLIED`，保留服务器原值、本地值与 `reconciled_remaining`。
+任务在原预算与实际可用额度内自动取下一未保存页，无需额外诊断、批准或手动 resume。
+不退款、不增加请求预算、不把 ATTEMPT 和 OUTCOME 当成两次请求；重复高余额响应不能补回额度。
+缺失/非法遥测、窗口未验证、权限错误、真实额度不足和预算耗尽仍分别处理。
+
+历史上仅因该数值差异暂停的任务，可在工程中离线追加对账，不读取 key 或发出 API 请求：
+
+```sh
+scopus-access reconcile --run-info /absolute/path/to/original/run-info.json
+# 若原授权仍有效、预算有剩余，resume 也会先自动进行上述本地对账，再继续未保存页
+scopus-access resume --run-info /absolute/path/to/original/run-info.json --execute-live
+```
+
+历史修复核验保留的有效遥测、原始页面哈希、计费链、项目绑定和最新窗口，仅追加账本
+证据，不改旧记录、checkpoint、receipt 或任务预算。授权过期不续期，已耗尽任务不重发。
+旧证据不足或后来出现权限/窗口等失败时拒绝使用旧数值解锁。单请求诊断已用尽预算时，
+可以修正配额状态，但不会得到第二次请求。详见 [配额规则与恢复](docs/QUOTA-RECONCILIATION.md)。
+
+## 历史 0.4.1：余额原因显示与独立诊断
+
+以下描述 0.4.1 的旧行为；仅因有效数值差异暂停的控制流程已被 0.4.2 替换。
 
 服务器余额高于本地扣费后余额时，输出准确的
 `RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING`、服务器值和本地值；保守暂停，

@@ -83,6 +83,8 @@ def inspect(source):
             'phase':phase, 'requests_attempted':attempted, 'request_budget':info['planned_requests'],
             'reserved_remaining':remaining, 'pages_saved':len(pages), 'quota_state':state,
             'current_bucket_reason':snapshot.reason_code if snapshot and snapshot.reason_code in HEADER_REASONS else 'UNCLASSIFIED_QUOTA_REASON',
+            'quota_server_remaining':snapshot.server_remaining if snapshot else None,
+            'quota_reconciled_remaining':snapshot.effective_remaining if snapshot else None,
             'diagnostic_allowed':diagnostic_allowed, 'diagnostic_used':diagnostic_used,
             'can_start':zero, 'next_actions':actions, 'telemetry':telemetry, 'service_error':service,
             'result_set_exhausted':checkpoint.complete if checkpoint else False,
@@ -189,3 +191,75 @@ def start(args):
         return cli.main(['preflight' if manifest.task_type=='preflight' else 'run', info['manifest_path'],
                          '--policy',info['policy_path'],'--db',info['database_path'],
                          '--run-id',info['parent_run_id'],'--execute-live'])
+
+
+def reconcile(source, *, only_if_applicable=False):
+    """Repair a retained numeric-only quota pause without secrets or transport."""
+    import hashlib
+    from .integration import _safe_page_ref
+    from .ledger import LedgerError
+    from .security import canonical_json_bytes
+    info, policy, manifest, ledger, store, run = context(source)
+    alias = policy.key_alias_for(info['project_id'],info['api_name'])
+    snapshot = ledger.quota_status(alias,info['api_name'])
+    if only_if_applicable and (snapshot is None or snapshot.reason_code != 'RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING'):
+        return None
+    with store.resume_lock(run), ledger.execution_lock():
+        reservations,usage,checkpoint,receipt,pages,events = _evidence(info,ledger,store,run)
+        candidates = [r for r in events if r['event']=='quota_telemetry'
+            and r['telemetry_reason'] in {'RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING','RECONCILIATION_UNAVAILABLE'}
+            and all(r[n+'_status']=='valid' for n in ('limit','remaining','reset'))
+            and all(type(r.get(n)) is int for n in ('quota_limit','quota_remaining','quota_reset_epoch'))]
+        if not candidates:
+            if only_if_applicable: return None
+            raise ValidationError('No retained validated observation of a numeric-only pause.',code='QUOTA_RECONCILIATION_UNAVAILABLE')
+        telemetry = candidates[-1]
+        saved = [p for p in pages if p.attempt_id==telemetry['attempt_id']]
+        starts = [r for r in usage if r['record_kind']=='ATTEMPT' and r['cursor_or_page_ref']==_safe_page_ref(telemetry['attempt_id'])]
+        if len(saved)!=1 or len(starts)!=1:
+            raise ValidationError('Retained observation has no unique saved page and charged attempt.',code='QUOTA_RECONCILIATION_UNAVAILABLE')
+        page,attempt = saved[0],starts[0]
+        outcomes = [r for r in usage if r['record_kind']=='OUTCOME' and r['attempt_id']==attempt['attempt_id']]
+        completed = [r for r in events if r['event']=='page_completed' and r['attempt_id']==telemetry['attempt_id']]
+        latest = max(reservations,key=lambda r:r['event_seq']) if reservations else None
+        if (latest is None or len(outcomes)!=1 or outcomes[0]['http_status']!=200
+                or outcomes[0]['response_receipt_hash_or_ref']!=page.sha256
+                or len(completed)!=1 or completed[0]['response_sha256']!=page.sha256
+                or completed[0].get('http_status')!=200 or checkpoint is None or receipt is None
+                or checkpoint.requests_attempted!=latest['actual_requests']
+                or checkpoint.requests_attempted!=sum(r['record_kind']=='ATTEMPT' for r in usage)
+                or checkpoint.completed_pages!=len(pages)
+                or latest['api_key_alias']!=alias or latest['query_package_hash_or_ref']!=manifest.query_manifest_sha256):
+            raise ValidationError('Retained run evidence is incomplete or inconsistent.',code='QUOTA_RECONCILIATION_UNAVAILABLE')
+        store.read_response_record(page)
+        evidence = {'telemetry':telemetry,'page_sha256':page.sha256,'attempt_id':attempt['attempt_id'],
+                    'manifest_sha256':info['manifest_sha256'],'policy_sha256':info['policy_sha256']}
+        digest = hashlib.sha256(canonical_json_bytes(evidence)).hexdigest()
+        headers = {'X-RateLimit-Limit':str(telemetry['quota_limit']),
+                   'X-RateLimit-Remaining':str(telemetry['quota_remaining']),
+                   'X-RateLimit-Reset':str(telemetry['quota_reset_epoch'])}
+        try:
+            current,changed = ledger.reconcile_retained_min(attempt_id=attempt['attempt_id'],
+                api_key_alias=alias,api_name=info['api_name'],project_id=info['project_id'],headers=headers,
+                response_sha256=page.sha256,evidence_sha256=digest)
+        except LedgerError as exc:
+            reason = str(exc)
+            code = reason if reason in {'RETAINED_RECONCILIATION_EVIDENCE_MISMATCH',
+                'RETAINED_RECONCILIATION_NOT_LATEST_NUMERIC_PAUSE','RETAINED_RECONCILIATION_WINDOW_EXPIRED',
+                'RETAINED_RECONCILIATION_HEADERS_INVALID'} else 'QUOTA_RECONCILIATION_UNAVAILABLE'
+            raise ValidationError('Retained quota reconciliation failed its current-bucket checks.',code=code) from None
+    expired = manifest.release_evidence.has_expired()
+    return {'run_info_path':str(Path(source).absolute()),'changed':changed,
+            'quota_state':state_at(current,utc_now()).value,'quota_remaining':telemetry['quota_remaining'],
+            'current_bucket_reason':current.reason_code if current.reason_code in HEADER_REASONS else 'UNCLASSIFIED_QUOTA_REASON',
+            'quota_server_remaining':current.server_remaining,
+            'reconciled_remaining':current.effective_remaining,'quota_record_id':current.record_id,
+            'evidence_sha256':digest,'request_budget':info['planned_requests'],
+            'requests_attempted':latest['actual_requests'],'reserved_remaining':latest['reserved_remaining'],
+            'pages_saved':len(pages),'authorization_expired':expired,
+            'can_resume':not expired and latest['reserved_remaining']>0 and not checkpoint.complete
+                         and latest['admission_decision']=='ADMITTED'
+                         and latest['completed_or_released_at_utc'] is None
+                         and latest['window_id']==current.window_id
+                         and state_at(current,utc_now()).value in {'NORMAL','QUOTA_WARNING_80'},
+            'network_calls':0,'secret_reads':0}

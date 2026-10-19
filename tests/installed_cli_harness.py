@@ -6,6 +6,8 @@ import shutil
 import socket
 import sys
 import time
+import dataclasses
+from urllib.parse import parse_qs, urlsplit
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
@@ -32,6 +34,17 @@ with ExitStack() as stack:
     from scopus_access.client import TransportResponse
     assert Path(scopus_access.__file__).is_relative_to(Path(sys.prefix))
     secret = b"SYNTHETIC_INSTALLED_CLI_CREDENTIAL"
+    if os.environ.get('SCOPUS_TEST_LEGACY_BALANCE_PAUSE')=='1':
+        from scopus_access import ledger, quota
+        current_evaluate=quota.evaluate_headers
+        def legacy_evaluate(headers, observed, previous=None):
+            value=current_evaluate(headers,observed,previous)
+            if (value.valid and previous is not None and value.reset_at_utc==previous.reset_at_utc
+                    and previous.effective_remaining is not None and value.remaining>previous.effective_remaining):
+                return dataclasses.replace(value,valid=False,reason_code='RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING',
+                    limit=None,remaining=None,reset_at_utc=None,window_id_changed=False)
+            return value
+        stack.enter_context(mock.patch.object(ledger,'evaluate_headers',side_effect=legacy_evaluate))
 
     class Writer:
         def __init__(self, *args, **kwargs):
@@ -68,9 +81,12 @@ with ExitStack() as stack:
                 finally:
                     os.close(fd)
                 time.sleep(0.1)
-            body = {"search-results": {"entry": [{"dc:identifier": "SYNTHETIC-INSTALLED-ID"}],
-                                      "opensearch:totalResults": "1", "opensearch:startIndex": "0"}}
-            return TransportResponse(status=200, headers={
+            params=parse_qs(urlsplit(request.url).query)
+            start=int(params.get('start',['0'])[0]); count=int(params.get('count',['1'])[0])
+            total=int(os.environ.get('SCOPUS_TEST_TOTAL','1'))
+            body = {"search-results": {"entry": [{"dc:identifier": "SYNTHETIC-INSTALLED-ID-%d"%index} for index in range(start,min(total,start+count))],
+                                      "opensearch:totalResults": str(total), "opensearch:startIndex": str(start)}}
+            return TransportResponse(status=200, headers={} if os.environ.get('SCOPUS_TEST_QUOTA_MISSING')=='1' else {
                 "X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "99",
                 "X-RateLimit-Reset": "4102444800",
             }, body=json.dumps(body).encode())

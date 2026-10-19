@@ -1,4 +1,8 @@
-# F01–F05 落实与边界（0.4.1）
+# F01–F05 落实与边界（0.4.2）
+
+0.4.2 已替换此前数字差异导致暂停的流程：有效同窗口余额自动取小值并在原预算内继续，
+并支持基于已留存证据的零请求追加对账。见 [配额实现](QUOTA-RECONCILIATION.md)。
+0.4.1 只补足显示，不能视为修复了这项控制流程缺陷。
 
 0.4.0 的 F01 覆盖存在遗漏：账本的本地计费不一致原因未进入输出白名单，显示成了
 通用错误。因此旧版“已实现”不代表覆盖了全部对账原因。0.4.1 补齐该原因及安全数值、
@@ -10,7 +14,7 @@
 
 | 项目 | 状态 | 代码依据 | 离线测试依据 |
 |---|---|---|---|
-| F01 配额遥测诊断与恢复指引 | 已实现 | diagnostics.py、runner.py 的 quota_telemetry；operations.py 的 inspect；保留现有诊断门禁 | test_feedback.py：正常/大小写、缺字段、坏值、过期、不一致、诊断已用、原页恢复 |
+| F01 配额遥测诊断与恢复指引 | 已实现 | quota.py/ledger.py 同窗口 min；runner.py 非阻断继续；operations.py 的 inspect/reconcile；无效遥测保留诊断门禁 | test_feedback.py 加 test_quota_min.py/test_installed_cli.py：有效差异自动三页、历史零请求追加对账、并发及原预算；无效字段与窗口门禁 |
 | F02 一般 HTTP 错误诊断与参数版本 | 已实现 | 白名单 service_diagnostic、service_error 与受限安全摘要；revise 另建离线预览 | test_feedback.py：400 INVALID_INPUT、数值限制、不同代码、JSON/XML、秘密/查询不泄露、原失败证据不变 |
 | F03 大结果集正式分页与技术覆盖检查 | 已实现（离线能力） | 显式 cursor、1–1000 请求、冻结排序；audit 页序/offset/标识符/总量核查 | test_feedback.py：5039 条/26 页、预算耗尽、无重复续取、总量变化/重复/缺口 |
 | F04 元数据 profile 与字段能力 | 部分实现 | COMPLETE、details META/META_ABS/FULL/REF、capabilities 成本、conversion 2.0 实际覆盖率 | test_feedback.py：实际字段/缺失字段、403 不降级、独立详情桶与原始来源标记 |

@@ -58,9 +58,13 @@ def human_message(record):
         return "已核对原任务：状态见 phase；诊断资格、剩余预算和允许的下一步见 next_actions。不需要重新初始化。"
     if command == 'diagnose' and status == 'previewed':
         return "已准备独立诊断预览：沿用原查询，STANDARD、1 次请求、1 条记录、零重试；未联网。需要单独批准后 execute，不改变原任务预算。"
+    if command == 'reconcile' and status in {'reconciled','unchanged'}:
+        return "已核对历史配额并保留较小余额；仅追加对账证据，未联网或读取密钥。原任务预算与授权期限不变，是否可继续见 can_resume。"
     if command == "audit" and status == "ok":
         return "本地字段覆盖率与分页核查已完成；字段非空不代表权限或参考文献完整，详见 JSON 中的覆盖率和校验状态。"
     if record.get("event") == "quota_telemetry" and record.get("telemetry_reason") not in {"RATE_LIMIT_HEADERS_VALID", "RATE_LIMIT_FIRST_SUCCESSFUL_DIAGNOSTIC"}:
+        if record.get('telemetry_reason') == 'RATE_LIMIT_BALANCE_MIN_APPLIED':
+            return "配额差异已自动对账：服务器 %s，本地已计费后 %s，采用较小余额 %s；按原任务预算继续，未退还请求或增加预约。" % (_count(record.get('quota_remaining')), _count(record.get('local_remaining_after_attempt')), _count(record.get('reconciled_remaining')))
         if record.get('telemetry_reason') == 'RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING':
             return "服务器报告余额 %s，本地扣除本次尝试后为 %s；两者不一致，已保守暂停。不是额度耗尽的证据。数据和计费记录保留；用 inspect 核对，不要重新 init。" % (_count(record.get('quota_remaining')), _count(record.get('local_remaining_after_attempt')))
         return "配额遥测未通过：%s。已取得的数据保留；使用 inspect 检查原任务、诊断资格和剩余预算，不要重新 init。" % record.get("telemetry_reason")

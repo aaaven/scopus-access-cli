@@ -1013,6 +1013,7 @@ class LedgerExecutionAdapter:
                 and result.header_reason_code in {
                     "RATE_LIMIT_HEADERS_VALID",
                     "RATE_LIMIT_FIRST_SUCCESSFUL_DIAGNOSTIC",
+                    "RATE_LIMIT_BALANCE_MIN_APPLIED",
                 }
                 and result.quota_state is not QuotaState.QUOTA_TELEMETRY_UNKNOWN
             )
@@ -1023,6 +1024,7 @@ class LedgerExecutionAdapter:
                 else "quota_telemetry_unknown",
                 result.header_reason_code,
                 result.local_remaining_after_attempt,
+                result.reconciled_remaining,
             )
 
     def assess_running_forecast(

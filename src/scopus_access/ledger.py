@@ -159,6 +159,7 @@ class ResponseResult:
     quota_state: QuotaState
     header_reason_code: str
     local_remaining_after_attempt: Optional[int] = None
+    reconciled_remaining: Optional[int] = None
 
 
 _SCHEMA = r"""
@@ -957,10 +958,17 @@ class Ledger:
         assert evaluation.limit is not None
         assert evaluation.remaining is not None
         assert evaluation.reset_at_utc is not None
-        used = evaluation.limit - evaluation.remaining
-        free = evaluation.remaining - committed
+        remaining = evaluation.remaining
+        if (previous is not None and previous.reset_at_utc == evaluation.reset_at_utc
+                and previous.effective_remaining is not None):
+            remaining = min(remaining, previous.effective_remaining)
+        # effective_remaining is after ALL charged ATTEMPTs, before unspent
+        # reservations. Outcomes never charge again; subtract commitments only
+        # here for admission capacity, never from the retained balance itself.
+        used = evaluation.limit - remaining
+        free = remaining - committed
         projected = used + committed
-        if evaluation.remaining == 0:
+        if remaining == 0:
             state = QuotaState.QUOTA_EXHAUSTED
         elif (
             previous is not None
@@ -983,7 +991,7 @@ class Ledger:
             limit=evaluation.limit,
             server_remaining=evaluation.remaining,
             local_attempts_since_header=0,
-            effective_remaining=evaluation.remaining,
+            effective_remaining=remaining,
             used=used,
             committed_in_progress=committed,
             free_to_admit=free,
@@ -2417,7 +2425,66 @@ class Ledger:
                 next_snapshot.state,
                 header_evaluation.reason_code,
                 previous.effective_remaining if previous else None,
+                next_snapshot.effective_remaining,
             )
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def reconcile_retained_min(
+        self, *, attempt_id: str, api_key_alias: str, api_name: str,
+        project_id: str, headers: Mapping[str, Any], response_sha256: str,
+        evidence_sha256: str, observed_at_utc: Optional[str] = None,
+    ) -> Tuple[BucketSnapshot, bool]:
+        """Append a local correction of an old numeric-only pause; no new charge.
+
+        The caller validates retained control events and the saved raw-page
+        hash. Recheck the immutable attempt/outcome and latest bucket under the
+        transaction. A missing observation, later failure or new window is
+        never repaired by replaying an older balance.
+        """
+        _validate_token('attempt_id', attempt_id)
+        _validate_digest('response_sha256', response_sha256)
+        _validate_digest('evidence_sha256', evidence_sha256)
+        observed = observed_at_utc or utc_now()
+        parse_utc(observed)
+        reference = 'retained-' + evidence_sha256
+        connection = self._connect()
+        try:
+            self._begin_immediate(connection)
+            attempt = connection.execute("SELECT * FROM request_usage_log WHERE attempt_id=? AND record_kind='ATTEMPT'",(attempt_id,)).fetchone()
+            outcome = connection.execute("SELECT * FROM request_usage_log WHERE attempt_id=? AND record_kind='OUTCOME'",(attempt_id,)).fetchone()
+            binding = connection.execute('SELECT api_key_alias FROM project_key_alias_ledger WHERE project_id=? ORDER BY rowid DESC LIMIT 1',(project_id,)).fetchone()
+            if (attempt is None or outcome is None or binding is None or binding[0] != api_key_alias
+                    or any(attempt[name] != expected for name,expected in
+                           (('api_key_alias',api_key_alias),('api_name',api_name),('project_id',project_id)))
+                    or attempt['reservation_delta'] != -1 or outcome['reservation_delta'] != 0
+                    or outcome['predecessor_event_id'] != attempt['request_event_id']
+                    or outcome['http_status'] != 200 or outcome['response_receipt_hash_or_ref'] != response_sha256):
+                raise LedgerError('RETAINED_RECONCILIATION_EVIDENCE_MISMATCH')
+            current = self._latest_snapshot(connection, api_key_alias, api_name)
+            existing = connection.execute("SELECT 1 FROM quota_window_ledger WHERE api_key_alias=? AND api_name=? AND record_kind='RETAINED_MIN_RECONCILIATION' AND header_evidence_ref=?",(api_key_alias,api_name,reference)).fetchone()
+            if existing and current is not None:
+                connection.commit()
+                return current, False
+            if (current is None or current.state is not QuotaState.QUOTA_TELEMETRY_UNKNOWN
+                    or current.reason_code != 'RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING'
+                    or current.header_evidence_ref != attempt_id):
+                raise LedgerError('RETAINED_RECONCILIATION_NOT_LATEST_NUMERIC_PAUSE')
+            if state_at(current, observed) is QuotaState.RESET_VERIFY:
+                raise LedgerError('RETAINED_RECONCILIATION_WINDOW_EXPIRED')
+            evaluation = evaluate_headers(headers, outcome['recorded_at_utc'], current)
+            if (not evaluation.valid or evaluation.window_id_changed
+                    or evaluation.reset_at_utc != current.reset_at_utc
+                    or current.window_id != _window_id(api_key_alias,api_name,evaluation.reset_at_utc)):
+                raise LedgerError('RETAINED_RECONCILIATION_HEADERS_INVALID')
+            successor = self._reconciled_snapshot(api_key_alias,api_name,headers,reference,observed,
+                current,current.committed_in_progress,header_evaluation=evaluation)
+            self._insert_snapshot(connection, successor, 'RETAINED_MIN_RECONCILIATION')
+            connection.commit()
+            return successor, True
         except Exception:
             connection.rollback()
             raise

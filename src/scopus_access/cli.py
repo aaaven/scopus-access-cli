@@ -95,6 +95,11 @@ def _cmd_continue(args: argparse.Namespace) -> int:
         fields = inspect(args.run_info)
         _write_control(sys.stdout, _result("run-status", "prepared" if fields["can_start"] else "ok", **fields))
         return 0
+    if args.command == 'resume' and args.execute_live:
+        from .operations import reconcile
+        correction = reconcile(args.run_info, only_if_applicable=True)
+        if correction is not None:
+            _write_control(sys.stdout, _result('reconcile','reconciled' if correction['changed'] else 'unchanged',**correction))
     if getattr(args, "terminal", False):
         from .terminal_run import run_in_terminal
         return run_in_terminal(args)
@@ -707,14 +712,17 @@ def _cmd_resume(args: argparse.Namespace) -> int:
                 artifacts=artifacts, run_id=parent_run_id, api_name=args.api_name,
             )
             return _receipt_exit(_execute_run(args, manifest, authorization, artifacts, ledger, capability))
-    capability = build_resume_authorization(
-        ledger=ledger, manifest=manifest, authorization=authorization,
-        artifacts=artifacts, run_id=parent_run_id, api_name=args.api_name,
-        allow_unstarted=True,
-    )
-    return _receipt_exit(_execute_run(
-        args, manifest, authorization, artifacts, ledger, capability
-    ))
+    execution_id = execution_run_id(manifest.project_id, manifest.task_id, manifest.release_id,
+                                    parent_run_id, args.api_name)
+    with artifacts.resume_lock(execution_id):
+        capability = build_resume_authorization(
+            ledger=ledger, manifest=manifest, authorization=authorization,
+            artifacts=artifacts, run_id=parent_run_id, api_name=args.api_name,
+            allow_unstarted=True,
+        )
+        return _receipt_exit(_execute_run(
+            args, manifest, authorization, artifacts, ledger, capability
+        ))
 
 
 def _cmd_run_status(args: argparse.Namespace) -> int:
@@ -800,6 +808,13 @@ def _cmd_diagnose(args):
     from .operations import prepare_diagnostic
     fields = prepare_diagnostic(args.run_info, correction=args.correction)
     _write_control(sys.stdout, _result('diagnose', 'previewed', **fields))
+    return EXIT_OK
+
+
+def _cmd_reconcile(args):
+    from .operations import reconcile
+    fields = reconcile(args.run_info)
+    _write_control(sys.stdout, _result('reconcile','reconciled' if fields['changed'] else 'unchanged',**fields))
     return EXIT_OK
 
 
@@ -919,6 +934,9 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose.add_argument('--correction',choices=('request_fix','environment_change','provider_guidance'),default=None,
                           help='only after reviewing a concrete change: link the latest completed diagnostic')
     diagnose.set_defaults(handler=_cmd_diagnose)
+    reconcile=subparsers.add_parser('reconcile',help='append an offline minimum-balance correction from retained validated evidence; no API request')
+    reconcile.add_argument('--run-info',required=True)
+    reconcile.set_defaults(handler=_cmd_reconcile)
     detail=subparsers.add_parser("details",help="freeze explicit Scopus IDs for bounded detail retrieval")
     detail.add_argument("--identifiers-file",required=True,help="restricted JSON list of Scopus identifiers")
     detail.add_argument("--view",choices=("META","META_ABS","FULL","REF"),default="META_ABS")

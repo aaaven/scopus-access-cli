@@ -384,11 +384,8 @@ class LedgerQuotaTests(unittest.TestCase):
             1,
             "2026-09-23T09:02:01Z",
         )
-        self.assertEqual(result.quota_state, QuotaState.QUOTA_TELEMETRY_UNKNOWN)
-        self.assertEqual(
-            result.header_reason_code,
-            "RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING",
-        )
+        self.assertEqual(result.quota_state, QuotaState.NORMAL)
+        self.assertEqual(result.header_reason_code, "RATE_LIMIT_BALANCE_MIN_APPLIED")
         self.assertEqual(
             self.ledger.quota_status("institutional-primary", SCOPUS_SEARCH).effective_remaining,
             99,

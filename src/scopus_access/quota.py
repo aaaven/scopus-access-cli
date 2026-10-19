@@ -290,27 +290,13 @@ def evaluate_headers(
         if reset_at == previous_reset:
             if previous.limit is not None and limit != previous.limit:
                 return HeaderEvaluation(False, "RATE_LIMIT_LIMIT_CHANGED_IN_WINDOW", None, None, None, False)
-            # Attempts are charged locally before transport.  In the same
-            # server window accepting a larger response balance would erase a
-            # durably counted request. This is an accounting inconsistency,
-            # not proof of exhaustion or of the provider's charging semantics.
-            if (
-                previous.effective_remaining is not None
-                and remaining > previous.effective_remaining
-            ):
-                return HeaderEvaluation(
-                    False,
-                    "RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING",
-                    None,
-                    None,
-                    None,
-                    False,
-                )
-            if (
-                previous.server_remaining is not None
-                and remaining > previous.server_remaining
-            ):
-                return HeaderEvaluation(False, "RATE_LIMIT_REMAINING_INCREASED", None, None, None, False)
+            if previous.effective_remaining is None or previous.effective_remaining < 0:
+                return HeaderEvaluation(False, "RATE_LIMIT_LOCAL_ACCOUNTING_UNAVAILABLE", None, None, None, False)
+            if remaining != previous.effective_remaining:
+                # Keep the provider's actual observation. The ledger combines
+                # it with its already-charged local floor in the transaction;
+                # a numeric disagreement is informational, not an unknown quota.
+                return HeaderEvaluation(True, "RATE_LIMIT_BALANCE_MIN_APPLIED", limit, remaining, reset_at_utc, False)
         elif observed < previous_reset:
             return HeaderEvaluation(False, "RATE_LIMIT_WINDOW_CHANGED_EARLY", None, None, None, False)
 

@@ -396,6 +396,7 @@ class QuotaObservationResult:
     quota_state: str
     reason_code: str = "RATE_LIMIT_HEADERS_VALID"
     local_remaining_after_attempt: Optional[int] = None
+    reconciled_remaining: Optional[int] = None
 
 
 class SecretProvider(Protocol):
@@ -1274,12 +1275,15 @@ class GovernedRunner:
                         if isinstance(observation_result, QuotaObservationResult):
                             telemetry_valid = observation_result.accepted
                             quota_state = observation_result.quota_state
-                            if not telemetry_valid:
+                            if not telemetry_valid or observation_result.reason_code == "RATE_LIMIT_BALANCE_MIN_APPLIED":
                                 reason = observation_result.reason_code
                                 telemetry["telemetry_reason"] = reason if reason in HEADER_REASONS and reason not in {"RATE_LIMIT_HEADERS_VALID","RATE_LIMIT_FIRST_SUCCESSFUL_DIAGNOSTIC"} else "RECONCILIATION_UNAVAILABLE"
                                 local = observation_result.local_remaining_after_attempt
                                 if type(local) is int and local >= 0:
                                     telemetry["local_remaining_after_attempt"] = local
+                                reconciled = observation_result.reconciled_remaining
+                                if type(reconciled) is int and reconciled >= 0:
+                                    telemetry['reconciled_remaining'] = reconciled
                                 self._emit("quota_telemetry", auth, attempt_id=attempt_id, **telemetry)
                         else:
                             # Compatibility with simple injected offline fakes.

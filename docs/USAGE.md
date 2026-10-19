@@ -331,26 +331,26 @@ count=1 的 `check`；若诊断已用且仍未知，保留数据，检查遥测/
 不要重新初始化、删除账本或不断创建任务。恢复条件满足后，`resume` 沿用原 checkpoint
 及剩余预约，不重发已保存页；预算耗尽不能用 resume 扩大。
 
-0.4.1 会明确输出 `RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING`、
-`quota_remaining`（服务器报告）和 `local_remaining_after_attempt`（本地已计费后）。
-这是余额不一致，不是耗尽；暂停与已计费尝试保留。`current_bucket_reason` 表示当前桶
-状态，可能晚于原 run；历史事件不会回写。
+0.4.2 对有效同窗口数值自动取较小余额并继续原任务。非阻断原因
+`RATE_LIMIT_BALANCE_MIN_APPLIED` 同时记录服务器 `quota_remaining`、
+`local_remaining_after_attempt` 和选定的 `reconciled_remaining`。不存在自动 +1 容差，
+也不退回已计费尝试；尚未花出的预约仅用于计算新准入容量，不再从余额重复扣除。
 
 ```sh
-# 为配额未知的 Search 准备独立的一次诊断预览，不读 key、不联网
-scopus-access diagnose --run-info /path/to/original/run-info.json
-# 已用过诊断：只有核对并实际修正问题后，才明确准备后继预览
-scopus-access diagnose --run-info /path/to/latest-diagnostic/run-info.json --correction request_fix
-# 审阅后另外批准新预览的 STANDARD / 1 请求 / 1 条 / 0 重试
-scopus-access execute --run-info /path/to/new-preview/run-info.json --execute-live
+# 修正历史仅因数值差异暂停的状态：离线，无 key 读取，无 API 请求
+scopus-access reconcile --run-info /path/to/original/run-info.json
+# 沿用未过期的原授权和剩余预约；会先自动核验并追加历史数值对账
+scopus-access resume --run-info /path/to/original/run-info.json --execute-live
 ```
 
-`--correction` 可选 request_fix、environment_change、provider_guidance；它是操作者
-对已发生变化的说明。已用后继固定最新完成前序，仅 HTTP 200/403 且一请求已结束、
-零剩余预约时可准备；准入事务再校验，多个草稿不能重复使用同一前序。读 key 失败
-但未发送的原预检仍用原 resume；diagnose 不代替该恢复，也不会给原任务加预算。
-默认不提供 401 后继猜测，不自动尝试额外认证。详见
-[0.4.1 说明](ITERATION-0.4.1.md)。
+reconcile 只接受最新桶的数字差异旧暂停及完整保留证据。它校验原运行、查询/配置哈希、
+ATTEMPT/OUTCOME、HTTP 200 保存页、有效遥测和窗口，并追加前序链接的对账行；重复执行
+不重复追加，也不会联网。它不改旧 receipt/checkpoint。`can_resume` 同时考虑窗口、
+原预算、保存页及授权期限；余额修正不能让已用尽的诊断再发一次请求，也不会续期授权。
+
+缺失或非法遥测仍可能需要单独有界诊断，保留原 `diagnose` 离线预览及明确批准机制。
+不要为已能取最小值的数值差异另外消耗 diagnostic。权限失败或后来出现其他失败时，
+不能拿更早的数值证据解锁。详见 [余额口径、并发和恢复](QUOTA-RECONCILIATION.md)。
 
 ```sh
 # 原任务已准备但未准入：明确批准后由调用方继续同一任务
