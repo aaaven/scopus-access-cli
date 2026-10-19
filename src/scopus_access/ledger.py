@@ -1317,6 +1317,70 @@ class Ledger:
         finally:
             connection.close()
 
+    def _admit_client_comparison(self, *, project_id, task_id, run_id, release_id,
+                                 query_package_hash_or_ref, view, expected_api_key_alias,
+                                 predecessor_reservation_id, now_utc=None):
+        """One atomic two-request diagnostic, linked to a completed detail 401.
+
+        This never changes the initial-preflight/ordinary admission gates and
+        never creates a live observation. Only the matched executor uses it.
+        One pair per key/API/window; uncertain sends cannot be replayed.
+        """
+        for name, value in (("project_id",project_id),("task_id",task_id),("run_id",run_id),
+                            ("release_id",release_id),("alias",expected_api_key_alias),
+                            ("predecessor",predecessor_reservation_id)):
+            _validate_token(name,value)
+        _validate_digest("query_package_hash_or_ref",query_package_hash_or_ref)
+        if view not in {"META", "META_ABS", "FULL", "REF"}:
+            raise LedgerError("COMPARISON_VIEW_INVALID")
+        now=now_utc or utc_now(); parse_utc(now)
+        connection=self._connect()
+        try:
+            self._begin_immediate(connection)
+            prior=self._latest_reservation(connection,predecessor_reservation_id)
+            binding=connection.execute("SELECT api_key_alias FROM project_key_alias_ledger WHERE project_id=? AND effective_at_utc<=? ORDER BY effective_at_utc DESC,rowid DESC LIMIT 1",(project_id,now)).fetchone()
+            snapshot=self._latest_snapshot(connection,expected_api_key_alias,"abstract_retrieval")
+            history=connection.execute("SELECT * FROM request_usage_log WHERE reservation_id=? ORDER BY rowid",(predecessor_reservation_id,)).fetchall()
+            latest_outcome=connection.execute("SELECT * FROM request_usage_log WHERE api_key_alias=? AND api_name='abstract_retrieval' AND record_kind='OUTCOME' ORDER BY rowid DESC LIMIT 1",(expected_api_key_alias,)).fetchone()
+            used=connection.execute("SELECT 1 FROM task_reservation_ledger WHERE event_seq=1 AND api_key_alias=? AND api_name='abstract_retrieval' AND admission_reason='AUTHORIZED_CLIENT_COMPARISON' AND window_id=?",(expected_api_key_alias,snapshot.window_id if snapshot else None)).fetchone()
+            if (prior is None or binding is None or binding[0]!=expected_api_key_alias
+                    or any(prior[k]!=v for k,v in (("project_id",project_id),("api_key_alias",expected_api_key_alias),("api_name","abstract_retrieval"),("view_name",view)))
+                    or prior['actual_requests']!=1 or prior['reserved_remaining']!=0
+                    or len(history)!=2 or history[0]['record_kind']!='ATTEMPT'
+                    or history[1]['record_kind']!='OUTCOME' or history[1]['http_status']!=401
+                    or history[1]['predecessor_event_id']!=history[0]['request_event_id']
+                    or latest_outcome is None or latest_outcome['attempt_id']!=history[1]['attempt_id']
+                    or snapshot is None or state_at(snapshot,now)!=QuotaState.QUOTA_TELEMETRY_UNKNOWN
+                    or snapshot.reason_code!='HTTP_401_FAIL_CLOSED'
+                    or snapshot.effective_remaining is None or snapshot.effective_remaining<2
+                    or snapshot.committed_in_progress+2>snapshot.effective_remaining
+                    or used or self._release_or_run_already_consumed(connection,project_id,task_id,release_id,run_id)):
+                raise LedgerError("COMPARISON_NOT_ADMISSIBLE")
+            reservation=_id("reservation")
+            # Copy only control bounds, never the original raw content.
+            fields=dict(prior)
+            fields.update(reservation_event_id=_id("reservation_event"),reservation_id=reservation,
+                event_seq=1,event_kind="COMPARISON_ADMITTED",predecessor_event_id=prior['reservation_event_id'],
+                task_id=task_id,run_id=run_id,release_id=release_id,window_id=snapshot.window_id,query_package_hash_or_ref=query_package_hash_or_ref,
+                forecast_pagination=0,forecast_detail_retrieval=2,forecast_validation=0,retry_allowance=0,
+                estimated_requests_with_margin=2,reserved_remaining=2,actual_requests=0,
+                admission_decision="ADMITTED",admission_reason="AUTHORIZED_CLIENT_COMPARISON",
+                admitted_at_utc=now,completed_or_released_at_utc=None,recorded_at_utc=now)
+            columns=list(fields)
+            connection.execute("INSERT INTO task_reservation_ledger ("+",".join(columns)+") VALUES ("+",".join("?" for _ in columns)+")",tuple(fields[k] for k in columns))
+            committed=snapshot.committed_in_progress+2
+            successor=BucketSnapshot(**{**snapshot.__dict__,"record_id":_id("quota"),
+                "committed_in_progress":committed,"free_to_admit":None,
+                "projected_used_pct":utilization_pct((snapshot.used or 0)+committed,snapshot.limit),
+                "observed_at_utc":now,"reconciliation_predecessor":snapshot.record_id})
+            self._insert_snapshot(connection,successor,"COMPARISON_RESERVED")
+            connection.commit()
+            return reservation
+        except BaseException:
+            connection.rollback();raise
+        finally:
+            connection.close()
+
     def _admit_preflight(
         self,
         project_id: str,
@@ -1508,7 +1572,8 @@ class Ledger:
                   AND seed.api_key_alias = ? AND seed.api_name = ?
                   AND seed.admission_reason IN (
                       'AUTHORIZED_MINIMAL_PREFLIGHT',
-                      'AUTHORIZED_BOUNDED_DIAGNOSTIC'
+                      'AUTHORIZED_BOUNDED_DIAGNOSTIC',
+                      'AUTHORIZED_CLIENT_COMPARISON'
                   )
                   AND current.reserved_remaining > 0
                 LIMIT 1
@@ -1684,6 +1749,18 @@ class Ledger:
             snapshot = self._latest_snapshot(
                 connection, reservation["api_key_alias"], reservation["api_name"]
             )
+            seed = connection.execute("SELECT admission_reason FROM task_reservation_ledger WHERE reservation_id=? AND event_seq=1",(reservation_id,)).fetchone()
+            is_comparison = (
+                snapshot is not None
+                and seed is not None and seed[0] == "AUTHORIZED_CLIENT_COMPARISON"
+                and reservation["estimated_requests_with_margin"] == 2
+                and reservation["api_name"] == "abstract_retrieval"
+                and int(reservation["actual_requests"]) in {0, 1}
+                and retry_number == 0
+                and connection.execute("SELECT 1 FROM request_usage_log a WHERE a.reservation_id=? AND a.record_kind='ATTEMPT' AND NOT EXISTS (SELECT 1 FROM request_usage_log o WHERE o.attempt_id=a.attempt_id AND o.record_kind='OUTCOME')",(reservation_id,)).fetchone() is None
+                and state_at(snapshot, now) in {QuotaState.NORMAL, QuotaState.QUOTA_WARNING_80, QuotaState.QUOTA_TELEMETRY_UNKNOWN}
+                and snapshot.effective_remaining is not None and snapshot.effective_remaining > 0
+            )
             is_initial_preflight = (
                 snapshot is None
                 and reservation["window_id"] is None
@@ -1787,12 +1864,14 @@ class Ledger:
                 effective_state not in allowed_states
                 and not is_initial_preflight
                 and not is_bounded_diagnostic
+                and not is_comparison
             ) or (
                 snapshot is not None
                 and snapshot.effective_remaining is not None
                 and snapshot.effective_remaining <= 0
                 and not is_initial_preflight
                 and not is_bounded_diagnostic
+                and not is_comparison
             ):
                 reason = (
                     "RESERVATION_EXHAUSTED"
@@ -1874,7 +1953,7 @@ class Ledger:
                     next_remaining,
                 )
 
-            if is_bounded_diagnostic:
+            if is_bounded_diagnostic or is_comparison:
                 effective_remaining = (
                     snapshot.effective_remaining - 1
                     if snapshot.effective_remaining is not None
@@ -1892,6 +1971,7 @@ class Ledger:
                         "local_attempts_since_header": snapshot.local_attempts_since_header + 1,
                         "effective_remaining": effective_remaining,
                         "used": used,
+                        "committed_in_progress": max(0,snapshot.committed_in_progress-1) if is_comparison else snapshot.committed_in_progress,
                         "free_to_admit": None,
                         "actual_used_pct": (
                             utilization_pct(used, snapshot.limit)
@@ -2390,6 +2470,11 @@ class Ledger:
                             "reason_code": disposition.stop_reason or "FAIL_CLOSED",
                         }
                     )
+            comparison = connection.execute("SELECT 1 FROM task_reservation_ledger WHERE reservation_id=? AND event_seq=1 AND admission_reason='AUTHORIZED_CLIENT_COMPARISON'",(attempt['reservation_id'],)).fetchone()
+            denied = connection.execute("SELECT 1 FROM request_usage_log WHERE reservation_id=? AND record_kind='OUTCOME' AND http_status IN (401,403)",(attempt['reservation_id'],)).fetchone()
+            if comparison and denied and int(http_status)==200:
+                next_snapshot=BucketSnapshot(**{**next_snapshot.__dict__,"state":QuotaState.QUOTA_TELEMETRY_UNKNOWN,
+                    "free_to_admit":None,"reason_code":"COMPARISON_ACCESS_MISMATCH"})
             self._insert_snapshot(connection, next_snapshot, "RESPONSE_RECONCILIATION")
 
             event_type = disposition.event_type

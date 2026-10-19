@@ -811,6 +811,24 @@ def _cmd_diagnose(args):
     return EXIT_OK
 
 
+def _cmd_compare(args):
+    from .comparison import prepare, execute
+    if args.source_run_info:
+        if args.execute_live or args.run_info:
+            raise ValidationError('Prepare the frozen pair before explicit execution.')
+        fields=prepare(args.source_run_info)
+        _write_control(sys.stdout,_result('compare','previewed',**fields))
+        return 0
+    if not args.run_info or not args.execute_live:
+        raise ValidationError('Use --source-run-info to prepare, or --run-info with --execute-live.')
+    args.runner_entered=True
+    fields=execute(args.run_info,secret_provider=MacOSKeychainSecretProvider(),cli_transport=UrllibTransport(),
+        on_prepared=lambda fields:_write_control(sys.stdout,_result('compare','prepared',**fields)))
+    status=fields.pop('status')
+    _write_control(sys.stdout,_result('compare',status,**fields))
+    return 0 if status=='completed' else EXIT_FAILED
+
+
 def _cmd_reconcile(args):
     from .operations import reconcile
     fields = reconcile(args.run_info)
@@ -929,6 +947,11 @@ def build_parser() -> argparse.ArgumentParser:
     revise.add_argument("--page-size",type=int,required=True)
     revise.add_argument("--max-requests",type=int,default=None)
     revise.set_defaults(handler=_cmd_revise)
+    compare=subparsers.add_parser('compare',help='prepare or execute one matched CLI/reference detail diagnostic, two requests total')
+    compare.add_argument('--source-run-info')
+    compare.add_argument('--run-info')
+    compare.add_argument('--execute-live',action='store_true')
+    compare.set_defaults(handler=_cmd_compare)
     diagnose=subparsers.add_parser('diagnose',help='prepare one separate bounded quota diagnostic offline; requires a new explicit approval')
     diagnose.add_argument('--run-info',required=True)
     diagnose.add_argument('--correction',choices=('request_fix','environment_change','provider_guidance'),default=None,

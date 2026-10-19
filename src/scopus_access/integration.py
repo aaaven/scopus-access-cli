@@ -165,6 +165,9 @@ def admit_authorized_manifest(
     if ledger.current_project_key_alias(manifest.project_id, now_utc) != expected_alias:
         raise IntegrationError("PROJECT_KEY_ALIAS_MISMATCH")
 
+    from .manifest import load_verified_query_manifest
+    if load_verified_query_manifest(manifest).get("classification") == "matched_client_comparison":
+        raise IntegrationError("USE_MATCHED_COMPARISON_EXECUTOR")
     requirements = tuple(
         _reservation_request(manifest, request.api_name)
         for request in manifest.requests

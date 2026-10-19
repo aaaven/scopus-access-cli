@@ -83,7 +83,7 @@ RELEASE_FIELDS = {
     "query_manifest_sha256",
     "execution_control_sha256",
 }
-RELEASE_OPTIONAL_FIELDS = {"diagnostic_predecessor_reservation_id"}
+RELEASE_OPTIONAL_FIELDS = {"diagnostic_predecessor_reservation_id", "comparison_source"}
 
 SCOPUS_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 QUERY_MANIFEST_BASE_FIELDS = {

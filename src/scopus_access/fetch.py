@@ -253,7 +253,7 @@ def prepare(args, *, query_text=None, predecessor=None):
 
 def _publish_task(policy_path, policy, project, store, identifier, task_id, release_id,
                   task_type, package_path, package_hash, request, execute_live, timestamp, predecessor=None,
-                  diagnostic_predecessor=None):
+                  diagnostic_predecessor=None, comparison_source=None):
     output = store.root
     now = datetime.now(timezone.utc)
     control_hash = execution_control_sha256(
@@ -282,6 +282,8 @@ def _publish_task(policy_path, policy, project, store, identifier, task_id, rele
     }
     if diagnostic_predecessor is not None:
         release["diagnostic_predecessor_reservation_id"] = diagnostic_predecessor
+    if comparison_source is not None:
+        release["comparison_source"] = comparison_source
     release_hash = _save(release_path, release)
     manifest_path = runtime / "task.json"
     _save(manifest_path, {
