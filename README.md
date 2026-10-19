@@ -1,7 +1,7 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.4.3**。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.4.4**。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
 工具不负责选题、corpus 建立、筛选、科学去重或文献计量分析。
@@ -28,7 +28,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.4.3-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.4.4-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help
@@ -283,3 +283,7 @@ scopus-access execute --run-info /absolute/path/to/new-preview/run-info.json --e
 新增 `scopus-access compare`：先从原详情 401 运行准备离线预览；再显式批准
 CLI 与独立最小客户端各一次、共两次、零重试。两次都计入原工程账本，报告
 原始响应与转换字段覆盖率及作者计数一致性。[使用与限制](docs/CLIENT-COMPARISON.md)。
+
+
+0.4.4 修复双客户端诊断的工程 Keychain service 传递，并新增 `compare --resume-unused`，
+只允许零发送证据下沿用原授权与两请求预约继续，任何已开始请求均拒绝重放。

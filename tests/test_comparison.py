@@ -50,7 +50,7 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(len(self.sent),1)
         return prepared['run_info_path']
 
-    def run_pair(self,source):
+    def run_pair(self,source,**options):
         def reference(identifier,view,key):
             self.assertEqual((identifier,view,key),('777','META_ABS',SECRET.decode()))
             attempts=[r for r in self.ledger.rows('request_usage') if r['record_kind']=='ATTEMPT']
@@ -58,7 +58,9 @@ class ComparisonTests(unittest.TestCase):
             self.sent.append('independent_reference')
             return self.response(self.statuses[2])
         with mock.patch.object(Path,'cwd',return_value=self.root):
-            return comparison.execute(source,secret_provider=self.secret,cli_transport=self.wire,reference=reference)
+            parameters=dict(secret_provider=self.secret,cli_transport=self.wire,reference=reference)
+            parameters.update(options)
+            return comparison.execute(source,**parameters)
 
     def test_pair_preserves_id_view_charges_twice_and_reports_raw_and_conversion(self):
         source=self.prepare();before=len(self.secret.aliases)
@@ -175,3 +177,98 @@ class ComparisonTests(unittest.TestCase):
         self.assertFalse(report['author_count_matches'])
         self.assertEqual(report['duplicate_author_identifiers'],1)
         self.assertEqual(report['raw_nonempty_records']['abstract'],0)
+
+
+    def failed_before_send(self):
+        from scopus_access.errors import SecretProviderError
+        source=self.prepare()
+        class Unavailable:
+            def get_api_key(self,alias):
+                raise SecretProviderError(reason='credential_not_found',stage='credential_read',backend='macos_security_framework',system_error_code=-25300)
+        with self.assertRaises(SecretProviderError):self.run_pair(source,secret_provider=Unavailable())
+        return source
+
+    def test_default_provider_uses_project_keychain_service(self):
+        source=self.prepare()
+        factory=mock.Mock(return_value=self.secret)
+        report=self.run_pair(source,secret_provider=None,secret_provider_factory=factory)
+        factory.assert_called_once_with(service_name=self.policy.keychain_service)
+        self.assertEqual(report['requests_attempted'],2)
+
+    def test_key_failure_zero_send_resumes_same_grant_and_reservation(self):
+        source=self.failed_before_send()
+        seeds=[r for r in self.ledger.rows('task_reservation') if r['event_seq']==1 and r['admission_reason']=='AUTHORIZED_CLIENT_COMPARISON']
+        self.assertEqual(len(seeds),1)
+        self.assertEqual(seeds[0]['actual_requests'],0)
+        self.assertEqual(seeds[0]['reserved_remaining'],2)
+        self.assertEqual(len(self.sent),1)
+        report=self.run_pair(source,resume_unused=True)
+        self.assertEqual(report['reservation_id'],seeds[0]['reservation_id'])
+        self.assertEqual(report['requests_attempted'],2)
+        self.assertEqual(len(self.sent),3)
+        self.assertEqual(len([r for r in self.ledger.rows('task_reservation') if r['event_seq']==1 and r['admission_reason']=='AUTHORIZED_CLIENT_COMPARISON']),1)
+
+    def test_unused_resume_rejects_any_started_attempt(self):
+        source=self.prepare()
+        class Broken:
+            def send(self,*args,**kwargs):raise RuntimeError('synthetic failure')
+        with mock.patch.object(Path,'cwd',return_value=self.root):
+            report=comparison.execute(source,secret_provider=self.secret,cli_transport=Broken())
+        self.assertEqual(report['requests_attempted'],1)
+        before=len(self.secret.aliases)
+        with self.assertRaises(ValidationError):self.run_pair(source,resume_unused=True)
+        self.assertEqual(len(self.secret.aliases),before)
+
+    def test_unused_resume_rejects_unlisted_raw_response(self):
+        source=self.failed_before_send()
+        from scopus_access.operations import context
+        marker=Path(source).parent/'comparison-execution.json'
+        path=json.loads(marker.read_text())['run_info_path']
+        with mock.patch.object(Path,'cwd',return_value=self.root):
+            _,_,_,_,store,run=context(path)
+        raw=store.root/'raw'/run;raw.mkdir(parents=True,exist_ok=True)
+        (raw/'unlisted.json').write_text('{}')
+        before=len(self.secret.aliases)
+        with self.assertRaises((ValidationError,RuntimeError)):self.run_pair(source,resume_unused=True)
+        self.assertEqual(len(self.secret.aliases),before)
+
+    def test_expired_original_grant_cannot_resume_unused_pair(self):
+        source=self.failed_before_send()
+        from scopus_access.manifest import ReleaseEvidence
+        from scopus_access.errors import LiveCapabilityLocked
+        before=len(self.secret.aliases)
+        with mock.patch.object(ReleaseEvidence,'is_current',return_value=False):
+            with self.assertRaises(LiveCapabilityLocked):self.run_pair(source,resume_unused=True)
+        self.assertEqual(len(self.secret.aliases),before)
+
+    def test_concurrent_unused_resume_sends_one_original_pair(self):
+        import threading
+        source=self.failed_before_send();reports=[];failures=[]
+        def run():
+            try:reports.append(self.run_pair(source,resume_unused=True))
+            except ValidationError:failures.append(1)
+        with mock.patch.object(Path,'cwd',return_value=self.root):
+            threads=[threading.Thread(target=run) for _ in range(2)]
+            for t in threads:t.start()
+            for t in threads:t.join(timeout=10)
+        self.assertEqual(len(reports),1)
+        self.assertEqual(len(failures),1)
+        self.assertEqual(len(self.sent),3)
+
+    def test_cli_constructs_provider_with_policy_service_and_resumes_unused(self):
+        import io
+        from contextlib import redirect_stdout,redirect_stderr
+        from scopus_access import cli
+        source=self.failed_before_send()
+        def reference(identifier,view,key):
+            self.assertEqual((identifier,view,key),('777','META_ABS',SECRET.decode()))
+            self.sent.append('independent_reference')
+            return self.response(200)
+        out=io.StringIO();err=io.StringIO()
+        with redirect_stdout(out),redirect_stderr(err),mock.patch.object(Path,'cwd',return_value=self.root),mock.patch.object(cli,'MacOSKeychainSecretProvider',return_value=self.secret) as factory,mock.patch.object(cli,'UrllibTransport',return_value=self.wire),mock.patch.object(comparison,'reference_request',side_effect=reference):
+            code=cli.main(['compare','--run-info',source,'--resume-unused','--execute-live'])
+        self.assertEqual(code,0,out.getvalue())
+        factory.assert_called_once_with(service_name=self.policy.keychain_service)
+        rows=[json.loads(x) for x in out.getvalue().splitlines()]
+        self.assertEqual(rows[-1]['requests_attempted'],2)
+        self.assertNotIn(SECRET.decode(),out.getvalue()+err.getvalue())

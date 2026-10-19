@@ -119,7 +119,34 @@ def coverage(body, artifact):
         'references_completeness':'not_verified','conversion_version':'2.0'}
 
 
-def execute(source, *, secret_provider=None, cli_transport=None, reference=None, on_prepared=None):
+def _unused_reservation(info, manifest, ledger, store, run, alias):
+    """Reuse exactly the admitted pair only with durable zero-send evidence."""
+    from .operations import _evidence
+    from .security import reject_symlink_components
+    reservations,usage,checkpoint,receipt,pages,events=_evidence(info,ledger,store,run)
+    seeds=[r for r in reservations if r['event_seq']==1]
+    latest=max(reservations,key=lambda r:r['event_seq']) if reservations else None
+    expected={'project_id':info['project_id'],'task_id':info['task_id'],
+        'run_id':info['parent_run_id'],'release_id':info['release_id'],
+        'query_package_hash_or_ref':info['query_package_sha256'],'api_key_alias':alias,
+        'api_name':API,'view_name':manifest.requests[0].view,'page_size':1,
+        'estimated_requests_with_margin':2,'retry_allowance':0}
+    directory=store.root/'comparisons'/run
+    reject_symlink_components(directory)
+    if (len(seeds)!=1 or latest is None
+            or seeds[0]['admission_reason']!='AUTHORIZED_CLIENT_COMPARISON'
+            or any(latest.get(k)!=v or seeds[0].get(k)!=v for k,v in expected.items())
+            or latest['admission_decision']!='ADMITTED'
+            or latest['actual_requests']!=0 or latest['reserved_remaining']!=2
+            or latest['completed_or_released_at_utc'] is not None
+            or usage or checkpoint or receipt or pages or events
+            or (directory.exists() and any(directory.iterdir()))):
+        raise ValidationError('Only an unchanged admitted pair with zero send activity can continue.',code='COMPARISON_NOT_UNUSED')
+    store.require_no_response_pages(run)
+    return latest['reservation_id']
+
+
+def execute(source, *, secret_provider=None, cli_transport=None, reference=None, on_prepared=None, secret_provider_factory=None, resume_unused=False):
     from .fetch import _read_run_info, _approve_preview, _write_run_info
     from .operations import context
     from .manifest import load_verified_query_manifest
@@ -141,11 +168,25 @@ def execute(source, *, secret_provider=None, cli_transport=None, reference=None,
     with store.resume_lock(lock_id):
         marker=Path(preview['manifest_path']).parent/'comparison-execution.json'
         if marker.exists():
-            raise ValidationError('This pair already has an execution. Inspect its evidence; no automatic replay.',code='COMPARISON_ALREADY_STARTED')
-        task_path,policy_path,database=_approve_preview(source)
-        path,info=_write_run_info(task_path,policy_path,database,execute_live=True)
-        from .fetch import _save
-        _save(marker,{'run_info_path':str(path)})
+            if not resume_unused:
+                raise ValidationError('This pair already has an execution. Inspect its evidence; no automatic replay.',code='COMPARISON_ALREADY_STARTED')
+            from .security import parse_json_object
+            link=parse_json_object(read_file_no_follow(marker,max_bytes=16384),description='comparison execution')
+            if set(link)!={'run_info_path'} or not isinstance(link['run_info_path'],str):
+                raise ValidationError('Comparison execution linkage is invalid.')
+            path=Path(link['run_info_path'])
+            info=_read_run_info(str(path))
+            if path.parent.parent!=marker.parent or any(info[k]!=preview[k] for k in
+                    ('project_id','task_id','release_id','api_name','database_path','project_output_dir',
+                     'query_package_sha256','planned_requests','page_size')):
+                raise ValidationError('Comparison execution linkage changed.')
+        else:
+            if resume_unused:
+                raise ValidationError('There is no original execution to continue.',code='COMPARISON_NOT_UNUSED')
+            task_path,policy_path,database=_approve_preview(source)
+            path,info=_write_run_info(task_path,policy_path,database,execute_live=True)
+            from .fetch import _save
+            _save(marker,{'run_info_path':str(path)})
         if on_prepared is not None:
             on_prepared({'run_info_path':str(path),'planned_requests':2,'retry_allowance':0,'network_calls':0,'secret_reads':0})
         info,policy,manifest,ledger,store,run=context(path)
@@ -166,12 +207,16 @@ def execute(source, *, secret_provider=None, cli_transport=None, reference=None,
             raise ValidationError('Comparison source or exact two-request bounds changed.')
         permit=authorize_live_execution(manifest,policy,explicit_cli_consent=True)
         with ledger.execution_lock():
-            reservation=ledger._admit_client_comparison(project_id=info['project_id'],task_id=info['task_id'],
-                run_id=info['parent_run_id'],release_id=info['release_id'],query_package_hash_or_ref=info['query_package_sha256'],
-                view=plan.view,expected_api_key_alias=permit.key_aliases[API],predecessor_reservation_id=prior['reservation_id'])
+            if resume_unused:
+                reservation=_unused_reservation(info,manifest,ledger,store,run,permit.key_aliases[API])
+            else:
+                reservation=ledger._admit_client_comparison(project_id=info['project_id'],task_id=info['task_id'],
+                    run_id=info['parent_run_id'],release_id=info['release_id'],query_package_hash_or_ref=info['query_package_sha256'],
+                    view=plan.view,expected_api_key_alias=permit.key_aliases[API],predecessor_reservation_id=prior['reservation_id'])
         auth=_manifest_run_capability(manifest,permit,reservation,info['parent_run_id'],API,2)
         adapter=LedgerExecutionAdapter(ledger,auth)
-        provider=secret_provider or MacOSKeychainSecretProvider()
+        factory=secret_provider_factory or MacOSKeychainSecretProvider
+        provider=secret_provider if secret_provider is not None else factory(service_name=policy.keychain_service)
         results=[];key=None
         # Resolve once before either attempt: two sequential calls receive the
         # same value even if the Keychain item is changed during the pair.

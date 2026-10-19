@@ -814,7 +814,7 @@ def _cmd_diagnose(args):
 def _cmd_compare(args):
     from .comparison import prepare, execute
     if args.source_run_info:
-        if args.execute_live or args.run_info:
+        if args.execute_live or args.run_info or args.resume_unused:
             raise ValidationError('Prepare the frozen pair before explicit execution.')
         fields=prepare(args.source_run_info)
         _write_control(sys.stdout,_result('compare','previewed',**fields))
@@ -822,7 +822,8 @@ def _cmd_compare(args):
     if not args.run_info or not args.execute_live:
         raise ValidationError('Use --source-run-info to prepare, or --run-info with --execute-live.')
     args.runner_entered=True
-    fields=execute(args.run_info,secret_provider=MacOSKeychainSecretProvider(),cli_transport=UrllibTransport(),
+    fields=execute(args.run_info,secret_provider_factory=MacOSKeychainSecretProvider,cli_transport=UrllibTransport(),
+        resume_unused=args.resume_unused,
         on_prepared=lambda fields:_write_control(sys.stdout,_result('compare','prepared',**fields)))
     status=fields.pop('status')
     _write_control(sys.stdout,_result('compare',status,**fields))
@@ -951,6 +952,7 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument('--source-run-info')
     compare.add_argument('--run-info')
     compare.add_argument('--execute-live',action='store_true')
+    compare.add_argument('--resume-unused',action='store_true',help='continue the same admitted comparison only with zero send activity')
     compare.set_defaults(handler=_cmd_compare)
     diagnose=subparsers.add_parser('diagnose',help='prepare one separate bounded quota diagnostic offline; requires a new explicit approval')
     diagnose.add_argument('--run-info',required=True)
