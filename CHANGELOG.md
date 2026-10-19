@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 — 2026-10-19
+
+- Add a separate DOI enrichment stage for already saved Scopus API JSONL: offline frozen preview, explicitly bounded Crossref/OpenAlex singleton execution, hash-checked project cache, original-budget resume and local JSONL/CSV merge export.
+- Preserve populated Scopus fields and all raw responses; record per-field provenance, DOI/title/version checks, source author counts/order and coverage before/after. Keep model keywords, subjects and citation IDs distinct from native author/index keywords and bibliography completeness.
+- Use a separate append-only local request ledger and process/cache locks; keep Scopus credentials and quota state untouched. Stop failed providers, reject uncertain replay and expired authorization, and report per-invocation network scope separately from cumulative charged attempts.
+- Add synthetic offline coverage of identity mismatches, unsupported fields, original data preservation, budgets, interruptions, corrupted cache/schema, multi-process sharing, fixed public transport and content-safe CLI output.
+
 ## 0.4.0 — 2026-10-19
 
 - Expose whitelist-only quota validation states, reconciliation reasons and safe service error summaries. Keep HTTP 200 data on unknown telemetry and charge failed requests.

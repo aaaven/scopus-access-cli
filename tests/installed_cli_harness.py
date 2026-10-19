@@ -127,6 +127,26 @@ with ExitStack() as stack:
     stack.enter_context(mock.patch.object(cli, "UrllibTransport", Transport))
     if os.environ.get("SCOPUS_TEST_USER_DIRECTORY"):
         stack.enter_context(mock.patch.object(Path, "home", return_value=Path(os.environ["SCOPUS_TEST_USER_DIRECTORY"])))
+    if os.environ.get('SCOPUS_TEST_ENRICH')=='1':
+        from scopus_access import enrichment
+        class PublicTransport:
+            def send(self,provider,doi,*,permit):
+                permit.claim(provider,doi)
+                counter=os.environ.get('SCOPUS_TEST_ENRICH_COUNTER')
+                if counter:
+                    fd=os.open(counter,os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
+                    try:os.write(fd,b'sent\n')
+                    finally:os.close(fd)
+                if provider=='crossref':
+                    payload={'message':{'DOI':doi,'title':['SYNTHETIC ENRICH TITLE'],'type':'journal-article',
+                        'abstract':'<p>SYNTHETIC ENRICH ABSTRACT</p>','author':[{'name':'SYNTHETIC AUTHOR'}],
+                        'reference':[{'DOI':'10.1234/reference'}],'reference-count':1}}
+                else:
+                    payload={'doi':'https://doi.org/'+doi,'title':'SYNTHETIC ENRICH TITLE',
+                        'authorships':[{'raw_author_name':'SYNTHETIC AUTHOR'}],
+                        'abstract_inverted_index':{'SYNTHETIC':[0],'ABSTRACT':[1]}}
+                return 200,{},json.dumps(payload).encode()
+        stack.enter_context(mock.patch.object(enrichment,'_PublicTransport',PublicTransport))
     executable = shutil.which(sys.argv[1])
     assert executable and Path(executable).resolve().parent == (Path(sys.prefix) / "bin").resolve()
     sys.argv = [executable] + sys.argv[2:]

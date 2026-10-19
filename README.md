@@ -1,7 +1,7 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.4.4**。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.5.0**。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
 工具不负责选题、corpus 建立、筛选、科学去重或文献计量分析。
@@ -18,6 +18,14 @@
 这是本地 CLI，不需要 Codex skill、服务器、组织身份流程或外部通知服务。
 Scopus API 权限由使用者自己的 key、订阅及机构访问条件决定。
 
+## DOI 补全（可选）
+
+0.5.0 新增 `scopus-access enrich prepare|execute|resume|status|export`：从当前工程已保存
+的 Scopus JSONL 中选定记录，单独通过 Crossref/OpenAlex 补空值。明确预算、零重试、
+原字段保留、缓存及来源可追溯；不再次查询 Scopus，也不读取 Scopus key。
+作者/索引关键词与模型关键词分开，参考文献条目与引用链接分开，不能保证补齐或完整。
+完整命令、存储、恢复及字段限制见 [DOI 补全使用说明](docs/DOI-ENRICHMENT.md)。
+
 ## 安装一次
 
 在源码仓库构建 wheel，再安装到固定工具环境。下面准备构建依赖的命令可能联网；
@@ -28,7 +36,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.4.4-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.5.0-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help
@@ -285,5 +293,5 @@ CLI 与独立最小客户端各一次、共两次、零重试。两次都计入�
 原始响应与转换字段覆盖率及作者计数一致性。[使用与限制](docs/CLIENT-COMPARISON.md)。
 
 
-0.4.4 修复双客户端诊断的工程 Keychain service 传递，并新增 `compare --resume-unused`，
+0.5.0 修复双客户端诊断的工程 Keychain service 传递，并新增 `compare --resume-unused`，
 只允许零发送证据下沿用原授权与两请求预约继续，任何已开始请求均拒绝重放。

@@ -224,3 +224,9 @@ for an old numeric-only pause. Repeated recovery is idempotent; resume also
 uses this correction before executing its original unexpired authorization.
 Normal missing/invalid-window, actual capacity, budget and access gates remain.
 See [QUOTA-RECONCILIATION.md](QUOTA-RECONCILIATION.md) for the balance contract.
+
+## Implemented optional DOI enrichment (0.5.0)
+
+The enrich command family is independent from Scopus retrieval. It consumes project-restricted saved normalized records, freezes the selected occurrences and public DOI singleton tasks, and requires separate bounded execution consent. A dedicated enrichment.sqlite append-only ledger avoids changing the strict Scopus control schema; third-party requests do not affect Scopus quota observations. Per-run and cache locks serialize local callers.
+
+Raw provider bodies, immutable snapshots and versioned mixed-source exports remain under the project's allowlisted restricted root. Missing fields alone may be filled after DOI/title/version checks; presence, cross-source agreement and publisher-verified completeness remain distinct. Native Scopus fields and external model keywords/citation links cannot be conflated. See [DOI enrichment](DOI-ENRICHMENT.md) for the exact supported semantics and recovery limits.

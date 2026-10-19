@@ -35,6 +35,10 @@ def _project(value):
 
 def human_message(record):
     command, status, event = record.get("command"), record.get("status"), record.get("event")
+    if command == 'enrich' and status not in {'error','locked'}:
+        if status == 'previewed':
+            return "DOI 补全预览已保存；最多 %s 次公开元数据请求、零重试。未联网、未读取 Scopus key；确认原任务后显式 execute。" % _count(record.get('max_requests'))
+        return "DOI 补全状态：%s；累计尝试 %s 次，缓存命中 %s 次。来源和覆盖率见报告；非空不代表作者或参考文献完整。" % (record.get('stage_status','ok'),_count(record.get('requests_attempted')),_count(record.get('cache_hits')))
     if command == "init":
         name = _project(record.get("display_name"))
         prefix = ("项目“" + name + "”：") if name else ""

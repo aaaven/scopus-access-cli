@@ -899,6 +899,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    from .enrichment import add_arguments as enrichment_arguments, run_cli as enrichment_cli
+    enrichment = subparsers.add_parser("enrich", help="separate bounded DOI enrichment of saved Scopus records")
+    enrichment_arguments(enrichment)
+    enrichment.set_defaults(handler=enrichment_cli)
+
     install = subparsers.add_parser("install", help="install or upgrade the fixed per-user CLI from a local wheel")
     install.add_argument("--wheel", required=True)
     install.set_defaults(handler=_cmd_install)

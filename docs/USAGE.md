@@ -397,3 +397,11 @@ META_ABS、FULL、REF 所需权限不能由 STANDARD 成功推断。当前单记
 零发送恢复仅支持旧有 STANDARD Search；详情预检若在凭据读取前失败，应保留原证据，
 不能删除预约反复检查。字段覆盖率只计实际非空值；完整作者和参考文献完整性显示
 not_verified，不承诺 REF/FULL 默认页包含完整参考文献。完整参考分页尚未实现。
+
+## 可选 DOI 补全
+
+已经保存 Scopus API 规范化 JSONL 后，可独立使用 `scopus-access enrich` 的
+prepare/execute/resume/status/export 阶段。它不重新检索 Scopus、不读取 key，
+只在明确批准的公开 DOI 请求预算内填补空值，并保留原值、来源、缺失与审核状态。
+命令、恢复、缓存、混合来源 CSV/JSONL 和完整性边界见
+[DOI 补全使用说明](DOI-ENRICHMENT.md)。

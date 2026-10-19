@@ -385,5 +385,42 @@ class InstalledCliTests(unittest.TestCase):
         self.assertEqual(rows[0]['reserved_remaining'],0)
 
 
+    def test_installed_enrichment_outside_source_preview_execution_resume_cache_and_export(self):
+        self.initialize()
+        saved=self.root/'restricted_metadata/scopus/saved.jsonl'
+        original={'source_format':'scopus_api_json','title':'SYNTHETIC ENRICH TITLE',
+            'doi':'10.1234/synthetic','abstract':None,'authors':None,'references':None,
+            'author_keywords':None,'index_keywords':None}
+        saved.write_text(json.dumps(original)+'\n')
+        counter=self.base/'public-request-counter'
+        env={'SCOPUS_TEST_ENRICH':'1','SCOPUS_TEST_ENRICH_COUNTER':str(counter)}
+        code,rows=self.invoke(self.root,'enrich','prepare','--records',str(saved),environment=env)
+        self.assertEqual(code,0,rows);source=rows[0]['run_info_path']
+        child=self.root/'nested/deep';child.mkdir(parents=True)
+        code,rows=self.invoke(child,'enrich','execute','--run-info',source,environment=env)
+        self.assertEqual(code,0,rows);self.assertTrue(rows[0]['consent_required']);self.assertFalse(counter.exists())
+        code,rows=self.invoke(child,'enrich','execute','--run-info',source,'--execute-live',environment=env)
+        self.assertEqual(code,0,rows);self.assertEqual(rows[0]['network_calls'],2)
+        self.assertEqual(counter.read_bytes(),b'sent\n'*2)
+        code,rows=self.invoke(child,'enrich','resume','--run-info',source,'--execute-live',environment=env)
+        self.assertEqual(code,0,rows);self.assertEqual(rows[0]['requests_attempted_this_invocation'],0)
+        for action in ('status','export'):
+            code,rows=self.invoke(child,'enrich',action,'--run-info',source,environment=env)
+            self.assertEqual(code,0,rows);self.assertEqual(rows[0]['network_calls'],0)
+        report=rows[0]
+        result=json.loads((self.root/'restricted_metadata/scopus'/report['merged_ref']).read_text())
+        self.assertEqual(result['scopus_original'],original)
+        self.assertEqual(result['merged']['abstract'],'SYNTHETIC ENRICH ABSTRACT')
+        self.assertIsNone(result['merged']['index_keywords'])
+        code,rows=self.invoke(self.root,'enrich','prepare','--records',str(saved),'--max-requests','0',environment=env)
+        self.assertEqual(code,0,rows)
+        code,rows=self.invoke(child,'enrich','execute','--run-info',rows[0]['run_info_path'],'--execute-live',environment=env)
+        self.assertEqual(code,0,rows);self.assertEqual(rows[0]['cache_hits'],2)
+        self.assertEqual(rows[0]['requests_attempted'],0);self.assertEqual(counter.read_bytes(),b'sent\n'*2)
+        code,rows=self.invoke(self.root,'usage')
+        self.assertEqual(code,0,rows);self.assertEqual(rows[0]['requests_attempted'],0)
+        for raw in (saved.read_bytes(),):self.assertNotIn(b'SYNTHETIC_INSTALLED_CLI_CREDENTIAL',raw)
+
+
 if __name__ == "__main__":
     unittest.main()
