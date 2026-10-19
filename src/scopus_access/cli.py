@@ -796,6 +796,13 @@ def _cmd_inspection(args):
     return 0
 
 
+def _cmd_diagnose(args):
+    from .operations import prepare_diagnostic
+    fields = prepare_diagnostic(args.run_info, correction=args.correction)
+    _write_control(sys.stdout, _result('diagnose', 'previewed', **fields))
+    return EXIT_OK
+
+
 def _cmd_revise(args):
     from .operations import context
     from .manifest import load_verified_query_manifest
@@ -907,6 +914,11 @@ def build_parser() -> argparse.ArgumentParser:
     revise.add_argument("--page-size",type=int,required=True)
     revise.add_argument("--max-requests",type=int,default=None)
     revise.set_defaults(handler=_cmd_revise)
+    diagnose=subparsers.add_parser('diagnose',help='prepare one separate bounded quota diagnostic offline; requires a new explicit approval')
+    diagnose.add_argument('--run-info',required=True)
+    diagnose.add_argument('--correction',choices=('request_fix','environment_change','provider_guidance'),default=None,
+                          help='only after reviewing a concrete change: link the latest completed diagnostic')
+    diagnose.set_defaults(handler=_cmd_diagnose)
     detail=subparsers.add_parser("details",help="freeze explicit Scopus IDs for bounded detail retrieval")
     detail.add_argument("--identifiers-file",required=True,help="restricted JSON list of Scopus identifiers")
     detail.add_argument("--view",choices=("META","META_ABS","FULL","REF"),default="META_ABS")

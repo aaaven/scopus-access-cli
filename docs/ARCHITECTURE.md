@@ -195,3 +195,17 @@ retaining the separate offset ceiling. details exposes the existing frozen-ID
 retrieval kernel. audit verifies saved pages and reports field presence and
 technical coverage; it never certifies a stable scientific population, complete
 author lists or reference networks. Reference pagination is not implemented.
+
+## 0.4.1 accounting and diagnostic preparation
+
+The accounting result carries the conservative post-attempt local balance to
+the fixed telemetry schema. A larger server remaining value pauses with the
+original ledger reason, without refund or history rewrite. Client and urllib
+header cleanup now encloses validation, capability checks and transport errors.
+Offline contract tests inspect the final urllib Request through a mock opener.
+diagnose freezes a separate unapproved one-request STANDARD check from the
+verified source query. A used diagnostic requires an explicit correction and
+the latest completed predecessor. The approved release pins that predecessor;
+the existing transactional admission arbitrates concurrent drafts. Original
+reservations and saved pages remain unchanged. Authentication stays API-key
+only; additional credentials and a live reference comparator remain future work.

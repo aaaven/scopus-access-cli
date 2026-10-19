@@ -95,7 +95,7 @@ _EVENT_REQUIRED = {
 }
 
 _EVENT_OPTIONAL = {
-    "quota_telemetry": {"quota_limit", "quota_remaining", "quota_reset_epoch"},
+    "quota_telemetry": {"quota_limit", "quota_remaining", "quota_reset_epoch", "local_remaining_after_attempt"},
     "service_error": {"service_max_count"},
     "task_admitted": set(),
     "request_started": set(),
@@ -154,6 +154,7 @@ _INTEGER_FIELDS = {"observed_epoch", "service_max_count",
     "http_status",
     "quota_limit",
     "quota_remaining",
+    "local_remaining_after_attempt",
     "quota_reset_epoch",
     "retry_after_seconds",
     "pages_completed",

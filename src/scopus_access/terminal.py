@@ -56,13 +56,21 @@ def human_message(record):
         return "%s失败：%s%s。%s%s" % (step, reason if reason in _REMEDIES else "keychain_error", suffix, explanation, activity)
     if command == "inspect" and status == "ok":
         return "已核对原任务：状态见 phase；诊断资格、剩余预算和允许的下一步见 next_actions。不需要重新初始化。"
+    if command == 'diagnose' and status == 'previewed':
+        return "已准备独立诊断预览：沿用原查询，STANDARD、1 次请求、1 条记录、零重试；未联网。需要单独批准后 execute，不改变原任务预算。"
     if command == "audit" and status == "ok":
         return "本地字段覆盖率与分页核查已完成；字段非空不代表权限或参考文献完整，详见 JSON 中的覆盖率和校验状态。"
     if record.get("event") == "quota_telemetry" and record.get("telemetry_reason") not in {"RATE_LIMIT_HEADERS_VALID", "RATE_LIMIT_FIRST_SUCCESSFUL_DIAGNOSTIC"}:
+        if record.get('telemetry_reason') == 'RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING':
+            return "服务器报告余额 %s，本地扣除本次尝试后为 %s；两者不一致，已保守暂停。不是额度耗尽的证据。数据和计费记录保留；用 inspect 核对，不要重新 init。" % (_count(record.get('quota_remaining')), _count(record.get('local_remaining_after_attempt')))
         return "配额遥测未通过：%s。已取得的数据保留；使用 inspect 检查原任务、诊断资格和剩余预算，不要重新 init。" % record.get("telemetry_reason")
     if record.get("event") == "service_error":
         return "服务端返回 HTTP %s：%s。未自动改写查询、切换 view 或重试；具体参数信息见控制记录。" % (_count(record.get("http_status")),record.get("remote_error_code","unclassified"))
     if status in {"error", "locked"}:
+        if record.get('code') == 'DIAGNOSTIC_CORRECTION_REQUIRED':
+            return "本窗口诊断已用；先检查原任务证据或联系服务商。仅在实际修正请求、网络环境变化或得到服务商指引后，以 --correction 准备一项需另行批准的诊断。"
+        if record.get('code') == 'DIAGNOSTIC_NOT_ALLOWED':
+            return "当前证据不允许准备该诊断；请 inspect 原 run-info。已有请求、配额和结果均未重置。"
         if str(record.get("code", "")).startswith("TERMINAL_"):
             if command != "init":
                 return "终端任务尚未完成：请检查原任务状态和已打开的窗口；请求活动可能未知，不会自动重发或增加预算。"

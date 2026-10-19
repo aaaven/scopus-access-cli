@@ -291,9 +291,9 @@ def evaluate_headers(
             if previous.limit is not None and limit != previous.limit:
                 return HeaderEvaluation(False, "RATE_LIMIT_LIMIT_CHANGED_IN_WINDOW", None, None, None, False)
             # Attempts are charged locally before transport.  In the same
-            # server window a response cannot legitimately report more quota
-            # than that conservative post-attempt balance; accepting it would
-            # erase a durably counted request.
+            # server window accepting a larger response balance would erase a
+            # durably counted request. This is an accounting inconsistency,
+            # not proof of exhaustion or of the provider's charging semantics.
             if (
                 previous.effective_remaining is not None
                 and remaining > previous.effective_remaining

@@ -158,6 +158,7 @@ class ResponseResult:
     disposition: HttpDisposition
     quota_state: QuotaState
     header_reason_code: str
+    local_remaining_after_attempt: Optional[int] = None
 
 
 _SCHEMA = r"""
@@ -2415,6 +2416,7 @@ class Ledger:
                 disposition,
                 next_snapshot.state,
                 header_evaluation.reason_code,
+                previous.effective_remaining if previous else None,
             )
         except Exception:
             connection.rollback()

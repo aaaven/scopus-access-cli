@@ -323,34 +323,41 @@ class UrllibTransport:
             )
         except Exception:
             raise UnsafeRequestError("Request snapshot is invalid.") from None
-        wire_capability.claim(snapshot)
-        _validate_request(snapshot)
-        wire_request = urllib.request.Request(
-            snapshot.url,
-            method="GET",
-            headers=dict(snapshot.headers),
-        )
+        wire_request = None
         try:
-            with self._opener.open(wire_request, timeout=self._timeout_seconds) as response:
-                status = int(response.status)
-                headers = {str(key): str(value) for key, value in response.headers.items()}
-                body = self._read_bounded(response)
-        except urllib.error.HTTPError as exc:
-            if 300 <= exc.code < 400:
-                exc.close()
-                raise UnsafeRequestError("Redirect responses are prohibited.") from None
+            wire_capability.claim(snapshot)
+            _validate_request(snapshot)
+            wire_request = urllib.request.Request(
+                snapshot.url,
+                method="GET",
+                headers=snapshot.headers,
+            )
             try:
+                with self._opener.open(wire_request, timeout=self._timeout_seconds) as response:
+                    status = int(response.status)
+                    headers = {str(key): str(value) for key, value in response.headers.items()}
+                    body = self._read_bounded(response)
+            except urllib.error.HTTPError as exc:
+                if 300 <= exc.code < 400:
+                    exc.close()
+                    raise UnsafeRequestError("Redirect responses are prohibited.") from None
                 try:
                     body = self._read_bounded(exc)
-                except TransportError:
-                    raise TransportError("Response exceeded the configured local limit.") from None
-                headers = {str(key): str(value) for key, value in exc.headers.items()}
-                status = int(exc.code)
-            finally:
-                exc.close()
-        except (urllib.error.URLError, OSError, TimeoutError):
-            # Do not chain urllib errors: they can contain the full query URL.
+                    headers = {str(key): str(value) for key, value in exc.headers.items()}
+                    status = int(exc.code)
+                finally:
+                    exc.close()
+        except (UnsafeRequestError, TransportError):
+            raise
+        except Exception:
+            # Constructor, opener and body-read errors can contain a query or
+            # credential. Never expose their text or exception chain.
             raise TransportError() from None
+        finally:
+            snapshot.headers.clear()
+            if wire_request is not None:
+                wire_request.headers.clear()
+                wire_request.unredirected_hdrs.clear()
         return TransportResponse(status=status, headers=MappingProxyType(headers), body=body)
 
 
@@ -810,18 +817,18 @@ class ElsevierApiClient:
             inode=authorization.control_database_inode,
         )
         with self._secret_provider.get_api_key(api_key_alias) as secret:
-            headers["X-ELS-APIKey"] = secret.reveal()
-            _validate_request(request)
-            wire_capability = _issue_wire_execution_capability(
-                request,
-                control_database_path=authorization.control_database_path,
-                control_database_instance_id=(
-                    authorization.control_database_instance_id
-                ),
-                control_database_device=authorization.control_database_device,
-                control_database_inode=authorization.control_database_inode,
-            )
             try:
+                headers["X-ELS-APIKey"] = secret.reveal()
+                _validate_request(request)
+                wire_capability = _issue_wire_execution_capability(
+                    request,
+                    control_database_path=authorization.control_database_path,
+                    control_database_instance_id=(
+                        authorization.control_database_instance_id
+                    ),
+                    control_database_device=authorization.control_database_device,
+                    control_database_inode=authorization.control_database_inode,
+                )
                 try:
                     response = self._transport.send(
                         request, wire_capability=wire_capability

@@ -1022,6 +1022,7 @@ class LedgerExecutionAdapter:
                 if accepted
                 else "quota_telemetry_unknown",
                 result.header_reason_code,
+                result.local_remaining_after_attempt,
             )
 
     def assess_running_forecast(

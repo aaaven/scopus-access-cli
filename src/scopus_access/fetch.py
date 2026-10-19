@@ -252,7 +252,8 @@ def prepare(args, *, query_text=None, predecessor=None):
 
 
 def _publish_task(policy_path, policy, project, store, identifier, task_id, release_id,
-                  task_type, package_path, package_hash, request, execute_live, timestamp, predecessor=None):
+                  task_type, package_path, package_hash, request, execute_live, timestamp, predecessor=None,
+                  diagnostic_predecessor=None):
     output = store.root
     now = datetime.now(timezone.utc)
     control_hash = execution_control_sha256(
@@ -269,7 +270,7 @@ def _publish_task(policy_path, policy, project, store, identifier, task_id, rele
     runtime.mkdir(parents=True, mode=0o700)
     reject_symlink_components(runtime)
     release_path = runtime / "release.json"
-    release_hash = _save(release_path, {
+    release = {
         "schema_version": "1.0", "evidence_type": "task_release",
         "project_id": project, "task_id": task_id, "task_type": task_type,
         "release_id": release_id, "status": "APPROVED" if execute_live else "DRAFT",
@@ -278,7 +279,10 @@ def _publish_task(policy_path, policy, project, store, identifier, task_id, rele
         "approved_at_utc": timestamp,
         "expires_at_utc": (now + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
         "query_manifest_sha256": package_hash, "execution_control_sha256": control_hash,
-    })
+    }
+    if diagnostic_predecessor is not None:
+        release["diagnostic_predecessor_reservation_id"] = diagnostic_predecessor
+    release_hash = _save(release_path, release)
     manifest_path = runtime / "task.json"
     _save(manifest_path, {
         "schema_version": "1.0", "project_id": project, "task_id": task_id,

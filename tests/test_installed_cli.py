@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import sqlite3
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -287,6 +288,47 @@ class InstalledCliTests(unittest.TestCase):
         self.assertEqual(after["project_id"], first["project_id"])
         self.assertEqual(after["key_alias"], first["key_alias"])
         self.assertFalse(after["credential_written"])
+
+    def test_two_installed_successor_grants_cannot_charge_same_predecessor_twice(self):
+        self.initialize()
+        query = self.query()
+        # The mock repeats 99: first response establishes quota, then a normal
+        # check and the one diagnostic pause on the conservative balance rule.
+        for expected in (0,5,5):
+            code, rows = self.invoke(self.root,'check','--query-file',str(query),'--execute-live',local=False)
+            self.assertEqual(code,expected,rows)
+        source = rows[0]['run_info_path']
+        drafts=[]
+        for _ in range(2):
+            code, rows = self.invoke(self.root,'diagnose','--run-info',source,'--correction','request_fix')
+            self.assertEqual(code,0,rows)
+            drafts.append(rows[0]['run_info_path'])
+        counter=self.base/'successor-counter'
+        env=dict(os.environ,PATH=str(self.bin)+os.pathsep+os.defpath,PYTHONDONTWRITEBYTECODE='1',
+                 SCOPUS_TEST_LOCAL_ONLY='0',SCOPUS_TEST_WIRE_COUNTER=str(counter))
+        processes=[]
+        try:
+            for draft in drafts:
+                processes.append(subprocess.Popen([str(self.python),'-I',str(self.harness),'scopus-access',
+                    'execute','--run-info',draft,'--execute-live'],cwd=str(self.root),env=env,
+                    stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE))
+            # Drain both pipes concurrently: otherwise an event-producing
+            # winner can fill stdout while the parent waits on the loser,
+            # which is correctly waiting for the shared execution lock.
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                outputs=list(pool.map(lambda process: process.communicate(timeout=30),processes))
+            codes=[]
+            for process,(out,err) in zip(processes,outputs):
+                self.assertNotIn(b'SYNTHETIC_INSTALLED_CLI_CREDENTIAL',out+err)
+                codes.append(process.returncode)
+            self.assertEqual(sum(code==5 for code in codes),1,codes)
+        finally:
+            for process in processes:
+                if process.poll() is None: process.kill();process.communicate()
+        self.assertEqual(counter.read_bytes(),b'sent\n')
+        database=self.root/'.scopus-access/control.sqlite'
+        with sqlite3.connect(str(database)) as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM request_usage_log WHERE record_kind='ATTEMPT'").fetchone()[0],4)
 
 
 if __name__ == "__main__":

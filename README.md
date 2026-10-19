@@ -1,7 +1,7 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.4.0**。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.4.1**。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
 工具不负责选题、corpus 建立、筛选、科学去重或文献计量分析。
@@ -28,7 +28,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.4.0-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.4.1-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help
@@ -211,6 +211,33 @@ per-project quota state and local exports. Bring your own API key. Install once,
 initialize each project, preview first, and use `--execute-live` for explicit
 bounded execution. Runtime dependencies: Python standard library only.
 
+
+## 0.4.1：余额不一致与独立诊断
+
+服务器余额高于本地扣费后余额时，输出准确的
+`RATE_LIMIT_REMAINING_EXCEEDS_LOCAL_ACCOUNTING`、服务器值和本地值；保守暂停，
+保留已取得的数据与计费历史。它不等于额度耗尽，也不能证明服务端采用何种扣费时序。
+
+```sh
+scopus-access inspect --run-info /absolute/path/to/run-info.json
+# 首次独立诊断：只生成预览，沿用原查询
+scopus-access diagnose --run-info /absolute/path/to/run-info.json
+# 仅在核对并修正具体问题后，才为已使用的诊断准备后继预览
+scopus-access diagnose --run-info /absolute/path/to/diagnostic-run-info.json --correction request_fix
+# 核对新预览后，明确批准其单独的一次请求；没有隐式执行
+scopus-access execute --run-info /absolute/path/to/new-preview/run-info.json --execute-live
+```
+
+诊断固定 STANDARD、至多一条记录、一次请求、零重试，单独记账，不扩大或重播原任务。
+`--correction` 还可明确选择 `environment_change` 或 `provider_guidance`；该选择是操作者
+对实际变化的说明，不会验证网络归属或权限。没有新证据时先检查记录或联系服务商，
+不要连续新建诊断。未发送的原预检应使用 `resume`，而不是新诊断。
+
+修复了校验、授权能力校验及 urllib 构造/发送/读取失败时的请求头清理边界。
+新增离线测试检查最终 urllib 请求的 numeric-ID/META_ABS 路径、固定头部、先记账后发送、
+401 不重试及所有已创建头部副本清理。当前认证仍是 API key；Search 成功不能证明
+详情 view 权限。历史 401 的根因和新版本实网行为尚待单独授权验收。
+详见 [0.4.1 迭代说明](docs/ITERATION-0.4.1.md)。
 
 ## 0.4.0：诊断、恢复及元数据能力
 

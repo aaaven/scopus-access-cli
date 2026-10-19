@@ -86,6 +86,22 @@ class InitialPreflightLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(LedgerError, "REQUIRES_COMPLETED_RESPONSE"):
             self._diagnostic("NO-HTTP-RESULT", predecessor)
 
+    def test_concurrent_successor_admissions_cannot_reuse_predecessor(self):
+        predecessor = self._failed_diagnostic()
+        def prepare(index):
+            try:
+                return self._diagnostic('CONCURRENT-%d' % index, predecessor)
+            except LedgerError:
+                return None
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(prepare, range(4)))
+        admitted = [r for r in results if r is not None and r.admitted]
+        self.assertEqual(len(admitted),1)
+        reservation = admitted[0].buckets[0].reservation_id
+        attempt = self.ledger.record_request_attempt(reservation,'search','page-1',0,NOW)
+        self.assertTrue(attempt.allowed)
+        self.assertFalse(self.ledger.record_request_attempt(reservation,'search','page-1',0,NOW).allowed)
+
     def test_explicit_query_correction_after_200_preserves_unknown_quota(self):
         self._finish_403(self._diagnostic("INITIAL"))
         diagnostic = self._diagnostic("EMPTY-QUERY")

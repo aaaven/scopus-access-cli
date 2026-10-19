@@ -27,7 +27,11 @@ class InstallerTests(unittest.TestCase):
     def wheel(self, version):
         path = self.root / ("uaeu_scopus_access_layer-" + version + "-py3-none-any.whl")
         with zipfile.ZipFile(path, "w") as archive:
-            archive.writestr("uaeu_scopus_access_layer-" + version + ".dist-info/METADATA",
+            # Identical fixture bytes are essential: real ZIP timestamps can
+            # cross a two-second boundary and falsely simulate a new wheel.
+            metadata = zipfile.ZipInfo("uaeu_scopus_access_layer-" + version + ".dist-info/METADATA",
+                                       date_time=(2000,1,1,0,0,0))
+            archive.writestr(metadata,
                              "Name: uaeu-scopus-access-layer\nVersion: " + version + "\n")
         return path
 

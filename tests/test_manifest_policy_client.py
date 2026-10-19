@@ -1069,6 +1069,7 @@ class ManifestPolicyClientTests(unittest.TestCase):
 
             def open(self, request, timeout):
                 self.request = request
+                self.headers_at_open = {key.lower(): value for key, value in request.header_items()}
                 return Response()
 
         transport = UrllibTransport()
@@ -1085,13 +1086,12 @@ class ManifestPolicyClientTests(unittest.TestCase):
         self.assertEqual(source.url_reads, 1)
         self.assertEqual(source.header_reads, 1)
         self.assertEqual(capture.request.full_url, good_url)
-        wire_headers = {
-            key.lower(): value for key, value in capture.request.header_items()
-        }
+        wire_headers = capture.headers_at_open
         self.assertNotIn("authorization", wire_headers)
         self.assertEqual(wire_headers["x-els-apikey"], FAKE_SECRET)
         self.assertEqual(wire_headers["accept"], "application/json")
         self.assertEqual(capture.request.get_method(), "GET")
+        self.assertEqual(capture.request.header_items(), [])
 
     def test_http_error_status_is_preserved_by_real_urllib_request_construction(self) -> None:
         request = TransportRequest(
@@ -1107,6 +1107,7 @@ class ManifestPolicyClientTests(unittest.TestCase):
                 class Opener:
                     def open(self, outgoing, timeout):
                         captured.append(outgoing)
+                        assert dict((k.lower(),v) for k,v in outgoing.header_items())["x-els-apikey"] == FAKE_SECRET
                         raise urllib.error.HTTPError(
                             outgoing.full_url, status, "mock rejection", {}, io.BytesIO(body)
                         )
@@ -1116,8 +1117,7 @@ class ManifestPolicyClientTests(unittest.TestCase):
                 response = transport.send(request, wire_capability=self._wire_capability(request))
                 self.assertEqual(response.status, status)
                 self.assertEqual(response.body, body)
-                headers = {key.lower(): value for key, value in captured[0].header_items()}
-                self.assertEqual(headers["x-els-apikey"], FAKE_SECRET)
+                self.assertEqual(captured[0].header_items(), [])
                 self.assertEqual(captured[0].full_url, request.url)
 
     def test_secret_value_repr_is_redacted_and_close_is_final(self) -> None:
