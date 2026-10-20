@@ -21,6 +21,7 @@ from urllib.robotparser import RobotFileParser
 
 from scopus_access import enrichment as api
 from scopus_access.request_budget import RequestBudget
+from scopus_access.publisher_runtime import record_runtime
 from scopus_access import request_budget
 from scopus_access.artifacts import RestrictedArtifactStore
 from scopus_access.errors import ValidationError, LiveCapabilityLocked
@@ -598,11 +599,13 @@ def execute(source,*,execute_live=False,resume=False,transport=None,after_task=N
     if not execute_live:raise LiveCapabilityLocked('Explicit consent for this publisher HTML phase and separate request budget is required.')
     p,ps,store,budget,op=context(source)
     if p['stage']!=VERSION:raise ValidationError('Historical publisher phase supports local analysis only; no replay is allowed.')
-    if p['fetch_code_sha256']!=fetch_code_hash():raise ValidationError('Publisher fetch code changed after preview; prepare a new explicit trial.')
     with store.resume_lock(p['run_id']):
         grant=budget.grant(p,ps,resume);events=budget.events(p['run_id']);terminal,unknown=api._terminal(events)
         prior_attempts=sum(e['kind']=='ATTEMPT' for e in events)
         if unknown:raise ValidationError('Prior publisher request has uncertain completion; replay denied.')
+        record_runtime(source,p,ps,backend='static',action='resume' if resume else 'execute',
+            parser_version=PARSER_VERSION,fetch_code_sha256=fetch_code_hash(),
+            parser_code_sha256=sha(read_file_no_follow(Path(__file__))))
         policies={};blocked=set();wire=transport
         for t in op['tasks']:
             host=urlsplit(t['url']).hostname;prior=terminal.get(t['task'])
@@ -651,6 +654,8 @@ def execute(source,*,execute_live=False,resume=False,transport=None,after_task=N
 
 def analyze(source):
     p,ps,store,budget,op=context(source)
+    record_runtime(source,p,ps,backend='static',action='export',parser_version=PARSER_VERSION,
+        fetch_code_sha256=fetch_code_hash(),parser_code_sha256=sha(read_file_no_follow(Path(__file__))))
     phases=[(p,op)]
     if p['phase']==2:
         parent,_,_,_,parent_op=context(p['parent']['run_info_path']);phases.insert(0,(parent,parent_op))

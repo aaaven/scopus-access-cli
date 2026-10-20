@@ -23,6 +23,7 @@ from .policy import load_policy
 from .project import discover_project_policy, require_project_context
 from .quota import utc_now, parse_utc
 from .request_budget import RequestBudget
+from .publisher_runtime import record_runtime
 from .security import read_file_no_follow, reject_symlink_components, parse_json_object, safe_identifier
 from . import publisher_html as html
 
@@ -142,7 +143,7 @@ def prepare(records, targets, *, max_requests, max_requests_per_page, max_robots
         try: prior=json.loads(store._read_relative(scope_ref,max_bytes=32768))
         except FileNotFoundError: prior=None
         frozen={'input_sha256':api.digest(input_bytes),'max_requests':max_requests,
-            'max_requests_per_page':max_requests_per_page,'max_robots_requests':robots,'code_sha256':_code_hash()}
+            'max_requests_per_page':max_requests_per_page,'max_robots_requests':robots}
         if prior is not None:
             if any(prior.get(k)!=v for k,v in frozen.items()):
                 raise ValidationError('Existing publisher page scope is frozen; a new task cannot replenish its budget.')
@@ -160,12 +161,12 @@ def prepare(records, targets, *, max_requests, max_requests_per_page, max_robots
             'operation_ref':operation_ref.as_posix(),'operation_sha256':api.digest(operation_bytes),
             'max_requests':max_requests,'max_requests_per_page':max_requests_per_page,'max_robots_requests':robots,
             'provider_limits':dict({p['sample_id']:max_requests_per_page for p in pages},publisher_policy=robots),
-            'retry_allowance':0,'code_sha256':frozen['code_sha256'],'created_at_utc':utc_now()}
+            'retry_allowance':0,'code_sha256':_code_hash(),'created_at_utc':utc_now()}
         control=policy.control_database_path.parent/'runs'/run; reject_symlink_components(control)
         control.mkdir(parents=True,mode=0o700)
         from .fetch import _save
         info=control/'run-info.json'; _save(info,plan)
-        store._atomic_write(scope_ref,api.encode(dict(frozen,run_info_path=str(info))),immutable=True)
+        store._atomic_write(scope_ref,api.encode(dict(frozen,code_sha256=plan['code_sha256'],run_info_path=str(info))),immutable=True)
         return status(info)
 
 
@@ -434,7 +435,6 @@ def _acquire(dispatcher,spec,factory):
 def execute(source,*,execute_live=False,resume=False,browser_factory=None,robots_transport=None,transport=None,after_stage=None):
     if not execute_live: raise LiveCapabilityLocked('Approve this frozen browser page scope and complete HTTP budget explicitly.')
     plan,plan_sha,store,budget,rows,operation=_context(source)
-    if plan['code_sha256']!=_code_hash(): raise ValidationError('Browser fetch code changed after preparation.')
     with store.resume_lock(plan['run_id']):
         events=budget.events(plan['run_id']); terminal,unknown=api._terminal(events)
         if unknown: raise ValidationError('Prior browser HTTP completion is uncertain; replay denied.')
@@ -445,6 +445,9 @@ def execute(source,*,execute_live=False,resume=False,browser_factory=None,robots
         if browser_factory is None and any(value is None for value in cached.values()):
             _playwright_api()
         grant=budget.grant(plan,plan_sha,resume)
+        record_runtime(source,plan,plan_sha,backend='browser',action='resume' if resume else 'execute',
+            parser_version=html.PARSER_VERSION,fetch_code_sha256=_code_hash(),
+            parser_code_sha256=api.digest(read_file_no_follow(Path(html.__file__))))
         internal=copy.deepcopy(plan); internal['_hosts']={p['sample_id']:p['domains'] for p in operation['pages']}
         internal['_hosts']['publisher_policy']=operation['robots_hosts']
         wire=transport or robots_transport or Transport(); policies={}
@@ -530,6 +533,8 @@ def status(source):
 
 def export(source):
     plan,ps,store,budget,rows,operation=_context(source); result=status(source)
+    record_runtime(source,plan,ps,backend='browser',action='export',parser_version=html.PARSER_VERSION,
+        fetch_code_sha256=_code_hash(),parser_code_sha256=api.digest(read_file_no_follow(Path(html.__file__))))
     output=[]; coverage={f:{'api_nonempty':0,'api_plus_html_nonempty':0,'newly_filled':0} for f in html.FIELDS}
     generation=api.digest(api.encode({'events':budget.events(plan['run_id']), 'pages':[_page_receipt(store,plan,p['sample_id'],budget.events(plan['run_id'])) for p in operation['pages']],
         'parser_code_sha256':api.digest(read_file_no_follow(Path(html.__file__))),'adapter_code_sha256':_code_hash()}))[:24]

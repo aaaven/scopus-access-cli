@@ -1,8 +1,8 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.6.0**，
-加入出版社 HTML 补全；[中英双语版本说明](docs/RELEASE-0.6.0.md) 记录使用方式与验证边界。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.6.1**，
+支持升级后沿用出版社任务及原预算；[版本说明](docs/RELEASE-0.6.1.md) 记录变更与验证边界。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
 工具不负责选题、corpus 建立、筛选、科学去重或文献计量分析。
@@ -45,7 +45,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.6.0-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.6.1-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help

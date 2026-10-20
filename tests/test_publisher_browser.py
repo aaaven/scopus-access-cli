@@ -12,7 +12,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from scopus_access import publisher_browser as browser, secrets
-from scopus_access.errors import ValidationError, LiveCapabilityLocked
+from scopus_access import publisher_runtime
+from scopus_access.errors import ValidationError, LiveCapabilityLocked, ReleaseExpired
 import test_local_cli as fixtures
 from test_publisher_html_probe import page as synthetic_page
 
@@ -115,6 +116,81 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(first['merged_sha256'],again['merged_sha256']);self.assertEqual(again['network_calls'],0)
         self.assertEqual(browser.export(source)['merged_sha256'],first['merged_sha256'])
         with self.assertRaises(ValidationError):self.execute(source)
+
+    def test_upgrade_resumes_original_scope_without_refetch_or_budget_reset(self):
+        second=dict(self.page,sample_id='D0002',url='https://link.springer.com/article/10.1234/synthetic1')
+        self.records.write_bytes(b''.join(browser.api.encode(r) for r in (self.base,dict(self.base,doi='10.1234/synthetic1'))))
+        self.targets.write_bytes(browser.api.encode([self.page,second]))
+        def stop(stage):
+            if stage=='after_page_receipt':raise KeyboardInterrupt()
+        with mock.patch.object(browser,'_code_hash',return_value='a'*64), mock.patch.object(publisher_runtime,'__version__','0.6.0'):
+            source=self.prepare(max_requests=5,max_requests_per_page=2)
+            with self.assertRaises(KeyboardInterrupt):self.execute(source,after_stage=stop)
+        plan,ps,store,budget,rows,op=browser._context(source)
+        scope=store.root/browser.ROOT/'scopes'/op['scope_sha256']/'binding.json'
+        files=[Path(source),scope,store.root/plan['operation_ref'],
+               store.root/browser._root(plan)/'pages/D0001/receipt.json',
+               store.root/browser._root(plan)/'pages/D0001/document-response.html',
+               store.root/browser._root(plan)/'pages/D0001/rendered.html']
+        originals={p:p.read_bytes() for p in files};events=budget.events(plan['run_id'])
+        with budget.connect() as c:grant=dict(c.execute('SELECT * FROM enrichment_grant').fetchone())
+        self.assertEqual(len(self.calls),3)
+        self.assertEqual(self.prepare(max_requests=5,max_requests_per_page=2),source)
+        with self.assertRaises(ValidationError):self.prepare(max_requests=6,max_requests_per_page=2)
+        with self.assertRaises(ValidationError):self.prepare(max_requests=5,max_requests_per_page=3)
+        result=self.execute(source,resume=True)
+        self.assertEqual((result['completed_pages'],result['requests_attempted'],result['budget_remaining']),(2,5,0))
+        self.assertEqual((result['network_calls'],len(self.calls),len(self.renderer.contexts)),(2,5,2))
+        self.assertEqual(sum(c['url']==self.page['url'] for c in self.calls),1)
+        self.assertEqual(events,budget.events(plan['run_id'])[:len(events)])
+        with budget.connect() as c:self.assertEqual(grant,dict(c.execute('SELECT * FROM enrichment_grant').fetchone()))
+        self.assertEqual(originals,{p:p.read_bytes() for p in files})
+        again=self.execute(source,resume=True)
+        self.assertEqual((again['network_calls'],again['requests_attempted'],again['budget_remaining']),(0,5,0))
+        self.assertEqual(len(self.calls),5)
+
+    def test_upgrade_reparses_saved_html_offline_and_appends_actual_runtime_versions(self):
+        with mock.patch.object(browser,'_code_hash',return_value='a'*64), mock.patch.object(publisher_runtime,'__version__','0.6.0'):
+            source=self.prepare();first=self.execute(source)
+        log=Path(source).with_name('runtime.jsonl');prefix=log.read_bytes()
+        original=Path(source).read_bytes();old_report=(self.root/'restricted_metadata/scopus'/first['report_ref']).read_bytes()
+        events=self.events(source);count=len(self.calls)
+        with mock.patch.object(browser,'_code_hash',return_value='b'*64), mock.patch.object(browser.html,'parse_html',wraps=browser.html.parse_html) as parser:
+            self.assertEqual(self.prepare(),source)
+            newer=browser.export(source)
+            self.assertEqual(parser.call_count,2)
+            resumed=self.execute(source,resume=True)
+        self.assertEqual((len(self.calls),resumed['network_calls']),(count,0))
+        self.assertEqual(events,self.events(source));self.assertEqual(original,Path(source).read_bytes())
+        self.assertEqual(old_report,(self.root/'restricted_metadata/scopus'/first['report_ref']).read_bytes())
+        self.assertNotEqual(first['report_ref'],newer['report_ref'])
+        self.assertTrue(log.read_bytes().startswith(prefix))
+        records=[json.loads(x) for x in log.read_bytes().splitlines()]
+        self.assertEqual(records[0]['cli_version'],'0.6.0')
+        self.assertEqual(records[-1]['cli_version'],publisher_runtime.__version__)
+        self.assertEqual(records[-1]['fetch_code_sha256'],'b'*64)
+        self.assertTrue(all(r['parser_version']==browser.html.PARSER_VERSION for r in records))
+        self.assertEqual({r['action'] for r in records},{'execute','resume','export'})
+        for value in (self.base['title'],self.base['abstract'],self.page['url'],'SYNTHETIC SECRET'):
+            self.assertNotIn(value,log.read_text())
+
+    def test_upgrade_does_not_renew_expired_authorization_or_replay_unknown_requests(self):
+        with mock.patch.object(browser,'_code_hash',return_value='a'*64):
+            source=self.prepare()
+            def stop(stage):
+                if stage=='after_result':raise KeyboardInterrupt()
+            with self.assertRaises(KeyboardInterrupt):self.execute(source,after_stage=stop)
+        events=self.events(source);count=len(self.calls)
+        with mock.patch('scopus_access.request_budget.utc_now',return_value='2099-01-01T00:00:00Z'):
+            with self.assertRaises(ReleaseExpired):self.execute(source,resume=True)
+        self.assertEqual((events,count),(self.events(source),len(self.calls)))
+
+    def test_runtime_log_symlink_is_rejected_before_dispatch(self):
+        source=self.prepare();target=self.root/'untouched.txt';target.write_bytes(b'SYNTHETIC UNTOUCHED')
+        Path(source).with_name('runtime.jsonl').symlink_to(target)
+        with self.assertRaises(ValidationError):self.execute(source)
+        self.assertFalse(self.calls);self.assertFalse(self.events(source))
+        self.assertEqual(target.read_bytes(),b'SYNTHETIC UNTOUCHED')
 
     def test_every_resource_and_repeated_url_is_charged(self):
         self.renderer.requests=[('document',None)]+[(kind,'https://link.springer.com/same') for kind in sorted(browser.TYPES-{'document'})]

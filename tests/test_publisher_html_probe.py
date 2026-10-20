@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 from scopus_access.errors import ValidationError,LiveCapabilityLocked
 from scopus_access import secrets
+from scopus_access import publisher_runtime, publisher_html
 import test_local_cli as fixtures
 
 spec=importlib.util.spec_from_file_location('html_probe',Path(__file__).resolve().parent.parent/'scripts/publisher_html_probe.py')
@@ -155,6 +156,37 @@ class HTMLProbeTests(unittest.TestCase):
         budget.append(p,op['tasks'][0],'ATTEMPT',code='charged')
         with self.assertRaises(ValidationError):self.execute(source,resume=True)
         self.assertFalse(self.calls)
+
+    def test_upgrade_resumes_static_run_and_reparses_saved_evidence_without_reset(self):
+        def stop(task):
+            if task==2:raise KeyboardInterrupt()
+        # Freeze an earlier fetch implementation, then leave one page complete.
+        with mock.patch.object(publisher_html,'fetch_code_hash',return_value='a'*64), mock.patch.object(publisher_runtime,'__version__','0.6.0'):
+            source=self.prepare()
+            with self.assertRaises(KeyboardInterrupt):self.execute(source,after_task=stop)
+        original=Path(source).read_bytes();p,ps,store,budget,op=html.context(source)
+        events=budget.events(p['run_id']);self.assertEqual(len(self.calls),2)
+        with budget.connect() as c:grant=dict(c.execute('SELECT * FROM enrichment_grant').fetchone())
+        result=self.execute(source,resume=True)
+        self.assertEqual((result['requests_attempted'],result['network_calls'],len(self.calls)),(11,9,11))
+        self.assertEqual(events,budget.events(p['run_id'])[:len(events)])
+        self.assertEqual(sum(t['task']==2 for t in self.calls),1)
+        with budget.connect() as c:self.assertEqual(grant,dict(c.execute('SELECT * FROM enrichment_grant').fetchone()))
+        self.assertEqual(original,Path(source).read_bytes())
+        old=(store.root/result['merged_ref']).read_bytes();old_report=(store.root/result['report_ref']).read_bytes()
+        with mock.patch('scopus_access.publisher_html.parse_html',wraps=html.parse_html) as parser:
+            reparsed=html.analyze(source)
+            self.assertEqual(parser.call_count,10)
+        self.assertEqual(reparsed['merged_sha256'],result['merged_sha256']);self.assertEqual(len(self.calls),11)
+        self.assertEqual(old,(store.root/result['merged_ref']).read_bytes())
+        self.assertEqual(old_report,(store.root/result['report_ref']).read_bytes())
+        log=Path(source).with_name('runtime.jsonl');records=[json.loads(x) for x in log.read_bytes().splitlines()]
+        self.assertEqual(records[0]['cli_version'],'0.6.0');self.assertEqual(records[0]['fetch_code_sha256'],'a'*64)
+        self.assertEqual(records[-1]['cli_version'],publisher_runtime.__version__)
+        self.assertEqual(records[-1]['parser_version'],html.PARSER_VERSION)
+        self.assertNotEqual(records[-1]['fetch_code_sha256'],'a'*64)
+        resumed=self.execute(source,resume=True)
+        self.assertEqual((resumed['network_calls'],resumed['requests_attempted'],len(self.calls)),(0,11,11))
 
     def test_changed_frozen_plan_or_response_is_rejected(self):
         source=self.prepare();report=self.execute(source);row=self.exported(report)[0]
