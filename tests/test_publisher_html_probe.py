@@ -62,10 +62,21 @@ class HTMLProbeTests(unittest.TestCase):
         body=b'<html><head><meta name="description" content="SYNTHETIC SEO EXCERPT"></head></html>'
         self.assertIsNone(self.parsed(body)['fields']['abstract'])
 
-    def test_generic_keywords_subjects_and_jsonld_keywords_are_not_author_or_scopus_keywords(self):
+    def test_article_keywords_supply_author_keywords_but_seo_and_subjects_do_not(self):
         body=page().replace(b'Author Keywords',b'Keywords').replace(b'</head>',b'<meta name="keywords" content="SYNTHETIC SEO"><meta name="dc.subject" content="SYNTHETIC SUBJECT"></head>')
-        c=self.parsed(body);self.assertIsNone(c['fields']['author_keywords']);self.assertIsNone(c['fields']['index_keywords'])
-        self.assertEqual(len(c['publisher_keywords_unclassified']),3)
+        c=self.parsed(body);self.assertEqual(c['fields']['author_keywords'],['SYNTHETIC TERM']);self.assertIsNone(c['fields']['index_keywords'])
+        self.assertEqual(len(c['publisher_keywords_unclassified']),2)
+        self.assertEqual(c['methods']['author_keywords'],'article_dom_keywords_as_author_keywords')
+
+    def test_navigation_keyword_sections_never_supply_article_author_keywords(self):
+        section=b'<section id="keywords"><h2>Author Keywords</h2><ul><li>SYNTHETIC TERM</li></ul></section>'
+        for container in ('nav','aside','form','footer'):
+            with self.subTest(container=container):
+                body=page().replace(section,('<'+container+'>').encode()+section+('</'+container+'>').encode())
+                candidate=self.parsed(body)
+                self.assertIsNone(candidate['fields']['author_keywords'])
+                self.assertEqual(candidate['publisher_article_keywords'],[])
+                self.assertTrue(candidate['identity']['eligible'])
 
     def test_matching_jsonld_graph_only_and_url_citations_are_not_bibliography(self):
         graph={'@graph':[{'@type':['ScholarlyArticle'],'identifier':'10.1234/wrong','abstract':'SYNTHETIC WRONG'},
@@ -105,7 +116,7 @@ class HTMLProbeTests(unittest.TestCase):
         self.assertEqual(report['publisher_fulltext_verified_complete_reference_lists'],0)
         self.assertEqual(export[0]['api_baseline'],rows[0])
         self.assertEqual(export[0]['merged']['missing_fields'],['index_keywords'])
-        self.assertEqual(export[0]['merged']['conversion_version'],html.VERSION)
+        self.assertEqual(export[0]['merged']['conversion_version'],html.PARSER_VERSION)
 
     def test_robots_disallow_or_unavailable_stops_without_page_requests(self):
         class Disallow:
@@ -223,3 +234,62 @@ class HTMLProbeTests(unittest.TestCase):
         declared=json.loads(manifest);self.assertNotIn('records',declared)
         data=store._read_relative(Path(declared['input_ref']),max_bytes=1024*1024)
         self.assertEqual(html.sha(data),declared['input_sha256']);self.assertIn(b'SYNTHETIC TITLE',data)
+
+    def test_bibliographic_h3_sibling_keywords_fill_author_keywords_without_subjects(self):
+        extra='<article><div class="c-bibliographic-information__column"><h3>Keywords</h3>\n<ul>'+''.join('<li>SYNTHETIC TERM %d</li>'%i for i in range(6))+'</ul><h3>Subjects</h3><ul><li>SYNTHETIC NON KEYWORD</li></ul></div></article>'
+        body=page().replace(b'<section id="keywords"><h2>Author Keywords</h2><ul><li>SYNTHETIC TERM</li></ul></section>',b'')
+        body=body.replace(b'</head>',b'<meta name="dc.subject" content="SYNTHETIC SUBJECT A"><meta name="dc.subject" content="SYNTHETIC SUBJECT B"></head>')
+        c=self.parsed(body+extra.encode())
+        self.assertEqual(c['publisher_article_keywords'],['SYNTHETIC TERM %d'%i for i in range(6)])
+        self.assertEqual(len(c['publisher_subject_classifications']),2)
+        self.assertEqual(c['fields']['author_keywords'],c['publisher_article_keywords']);self.assertIsNone(c['fields']['index_keywords'])
+        self.assertEqual(c['publisher_article_keyword_author_origin'],'publisher_article_keywords_used_as_author_keywords')
+        self.assertEqual(c['keyword_sections'][0]['method'],'heading_sibling_list')
+
+    def test_keyword_sibling_scanner_does_not_capture_navigation_or_later_lists(self):
+        body=page().replace(b'<section id="keywords"><h2>Author Keywords</h2><ul><li>SYNTHETIC TERM</li></ul></section>',b'')
+        body+=b'<nav><h3>Keywords</h3><ul><li>SYNTHETIC NAVIGATION</li></ul></nav><article><h3>Keywords</h3><h3>Subjects</h3><ul><li>SYNTHETIC SUBJECT</li></ul></article>'
+        self.assertFalse(self.parsed(body)['publisher_article_keywords'])
+
+    def test_author_comparison_reverses_single_comma_without_rewriting_byline(self):
+        base=dict(self.rows[0]['merged'],authors=[{'name':'A Example'},{'name':'B Example'}])
+        body=page().replace(b'content="A Example"',b'content="Example, A"').replace(b'content="B Example"',b'content="Example, B"')
+        c=html.parse_html(body,base,'https://link.springer.com/chapter/10.1234/synthetic0')
+        self.assertTrue(c['checks']['author_name_order_matches_api'])
+        self.assertFalse(c['checks']['author_name_order_matches_api_literal'])
+        self.assertEqual(c['fields']['authors'][0]['name'],'Example, A')
+        self.assertEqual(html.comparison_name('A Example, Jr.'),(html.api._title('A Example, Jr.'),False))
+        self.assertEqual(html.comparison_name('Example, A, Jr.')[1],False)
+
+    def test_reference_content_checks_do_not_equate_matching_counts_with_matching_content(self):
+        refs=[{'text':'1. SYNTHETIC FIRST (2020) TITLE','doi_links':['https://doi.org/10.1234/one'],'source_reference_number':1},
+              {'text':'2. SYNTHETIC SECOND (2021) TITLE','doi_links':['https://doi.org/10.1234/two'],'source_reference_number':2}]
+        base=[{'DOI':'10.1234/one','year':2020},{'DOI':'10.1234/two','year':2021}]
+        c=html.reference_comparison(refs,base);self.assertEqual(c['doi_matches_at_same_position'],2)
+        swapped=html.reference_comparison(list(reversed(refs)),base)
+        self.assertEqual(swapped['doi_matches_at_same_position'],0);self.assertEqual(swapped['doi_matches_anywhere'],2)
+        self.assertFalse(swapped['html_source_numbers_contiguous'])
+
+    def test_reference_action_links_removed_and_paths_distinguish_minified_nodes(self):
+        b=page().replace(b'</li>',b'<div class="c-article-references__links"><a href="https://doi.org/10.1234/reference">Google Scholar PubMed</a></div></li>')
+        c=self.parsed(b);refs=c['fields']['references'];self.assertEqual(len(refs),2)
+        self.assertNotIn('Google Scholar',refs[0]['text']);self.assertNotEqual(refs[0]['source_path'],refs[1]['source_path'])
+        self.assertEqual([r['source_reference_number'] for r in refs],[1,2])
+        self.assertTrue(c['checks']['reference_content_checks']['html_source_numbers_contiguous'])
+
+    def test_reference_numbers_use_explicit_html_counter_without_fabricating_text(self):
+        body=page().replace(b'<li><p>1. ',b'<li data-counter="1."><p>').replace(b'<li><p>2. ',b'<li data-counter="2."><p>')
+        refs=self.parsed(body)['fields']['references']
+        self.assertEqual([r['source_reference_number'] for r in refs],[1,2])
+        self.assertEqual([r['source_reference_number_origin'] for r in refs],['data-counter','data-counter'])
+        self.assertFalse(refs[0]['text'].startswith('1.'))
+        refs[1]['source_reference_number']=3
+        self.assertFalse(html.reference_comparison(refs,[])['html_source_numbers_contiguous'])
+
+    def test_author_byline_control_does_not_imply_missing_names_and_order_is_checked(self):
+        byline=b'<ul class="c-article-author-list"><li class="c-article-author-list__item"><a>A Example</a></li><li class="c-article-author-list__show-more">\xe2\x80\xa6</li><li class="c-article-author-list__item c-article-author-list__item--hide-small-screen"><a>B Example</a></li></ul>'
+        checks=self.parsed(page()+byline)['checks']
+        self.assertEqual(checks['byline_names_observed'],2);self.assertTrue(checks['byline_name_order_matches_metadata'])
+        self.assertTrue(checks['byline_show_more_control_observed']);self.assertFalse(checks['known_author_truncation'])
+        checks=self.parsed(page()+byline.replace(b'<a>B Example</a>',b'<a>C Example</a>'))['checks']
+        self.assertFalse(checks['byline_name_order_matches_metadata'])

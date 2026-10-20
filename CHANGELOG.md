@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 — 2026-10-20
+
+- Integrate publisher HTML into enrich with an explicit source and static/browser backend, plus fully offline saved-browser bundle import and pinned status/export.
+- Move the verified parser/importer into the package and expose a shared RequestBudget kernel; retain legacy script entry points and evidence compatibility.
+- Fill missing author keywords from article Keywords sections, preserve nonempty API fields and provenance, and keep subject classifications and Scopus index keywords separate.
+- Add optional isolated browser rendering with stateless fixed-header HTTPS dispatch, durable per-request accounting, precise hosts, original-budget resume and immutable document/DOM caches. Block redirects, unapproved activity and unknown replay.
+- Keep browser egress/interception live acceptance pending; exact pages, hosts and budgets require separate live approval. See the [bilingual release notes](docs/RELEASE-0.6.0.md) for installation, commands and validation boundaries.
+
 ## 0.5.0 — 2026-10-19
 
 - Add a separate DOI enrichment stage for already saved Scopus API JSONL: offline frozen preview, explicitly bounded Crossref/OpenAlex singleton execution, hash-checked project cache, original-budget resume and local JSONL/CSV merge export.

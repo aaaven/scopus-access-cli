@@ -1,6 +1,6 @@
 # Scopus Access Tool：通用本地 CLI 架构
 
-更新：2026-10-19。当前实现为 0.4.4。初始化、工程识别、共享本机状态及
+更新：2026-10-20。已发布/固定安装为 0.5.0，当前开发源码为 0.6.0.dev0。初始化、工程识别、共享本机状态及
 check/search/execute/status/export/resume/usage 已接通并完成离线验证。实际用法见
 [USAGE.md](USAGE.md)，测试记录见 [VALIDATION.md](VALIDATION.md)。
 
@@ -230,3 +230,22 @@ See [QUOTA-RECONCILIATION.md](QUOTA-RECONCILIATION.md) for the balance contract.
 The enrich command family is independent from Scopus retrieval. It consumes project-restricted saved normalized records, freezes the selected occurrences and public DOI singleton tasks, and requires separate bounded execution consent. A dedicated enrichment.sqlite append-only ledger avoids changing the strict Scopus control schema; third-party requests do not affect Scopus quota observations. Per-run and cache locks serialize local callers.
 
 Raw provider bodies, immutable snapshots and versioned mixed-source exports remain under the project's allowlisted restricted root. Missing fields alone may be filled after DOI/title/version checks; presence, cross-source agreement and publisher-verified completeness remain distinct. Native Scopus fields and external model keywords/citation links cannot be conflated. See [DOI enrichment](DOI-ENRICHMENT.md) for the exact supported semantics and recovery limits.
+
+## Publisher HTML integration (development source)
+
+The enrich router accepts an explicit publisher_html source. Saved browser bundles import entirely offline;
+static and browser acquisition are separately frozen choices and never fall back automatically. Existing
+nonempty API values and field provenance remain intact; article Keywords fill author_keywords only.
+Affiliations and Scopus index keyword inference remain outside this change.
+
+The package owns the parser, saved-evidence importer and a shared public RequestBudget kernel. Legacy
+scripts remain compatibility entry points. Independent project-bound web ledgers count requests without
+changing Scopus quota observations. Browser HTTP GETs use a fixed-header stateless dispatcher and durable
+attempt/outcome evidence; isolated offline Chromium renders fulfilled responses, with service workers,
+WebSocket, additional pages, redirects and unapproved hosts blocked. Each dispatched resource counts;
+completion caches prevent navigation replay and unknown activity stops resume. Context routes and launch
+settings do not certify whole-process egress coverage. Real browser acceptance is still pending.
+
+See [publisher HTML usage](PUBLISHER-HTML.md), [offline validation](VALIDATION.md) and the
+[bounded live proposal](PUBLISHER-HTML-LIVE-PLAN.md). The development wheel is tested in disposable
+environments; the fixed user installation remains 0.5.0 until a separate release decision.

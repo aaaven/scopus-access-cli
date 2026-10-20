@@ -899,8 +899,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    from .enrichment import add_arguments as enrichment_arguments, run_cli as enrichment_cli
-    enrichment = subparsers.add_parser("enrich", help="separate bounded DOI enrichment of saved Scopus records")
+    from .enrich_cli import add_arguments as enrichment_arguments, run_cli as enrichment_cli
+    enrichment = subparsers.add_parser("enrich", help="bounded DOI or publisher HTML enrichment of saved records")
     enrichment_arguments(enrichment)
     enrichment.set_defaults(handler=enrichment_cli)
 

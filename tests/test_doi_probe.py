@@ -13,7 +13,7 @@ from scopus_access.errors import ValidationError, LiveCapabilityLocked
 from scopus_access.artifacts import ArtifactError
 import test_local_cli as fixtures
 
-from scopus_access import enrichment as probe
+from scopus_access import enrichment as probe, request_budget
 
 class ProbeTests(unittest.TestCase):
     def setUp(self):
@@ -254,7 +254,8 @@ class ProbeTests(unittest.TestCase):
         source=self.prepare()
         def stop(number):raise KeyboardInterrupt()
         with self.assertRaises(KeyboardInterrupt):self.execute(source,after_task=stop)
-        with mock.patch.object(probe,'utc_now',return_value='2099-01-01T00:00:00Z'):
+        with mock.patch.object(probe,'utc_now',return_value='2099-01-01T00:00:00Z'), \
+                mock.patch.object(request_budget,'utc_now',return_value='2099-01-01T00:00:00Z'):
             with self.assertRaises(ReleaseExpired):self.execute(source,resume=True)
         self.assertEqual(len(self.calls),1)
 

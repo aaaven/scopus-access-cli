@@ -1,14 +1,16 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.5.0**。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.6.0**，
+加入出版社 HTML 补全；[中英双语版本说明](docs/RELEASE-0.6.0.md) 记录使用方式与验证边界。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
 工具不负责选题、corpus 建立、筛选、科学去重或文献计量分析。
 
 ## 功能与平台
 
-- macOS，Python **3.9+**，可使用 `venv` 和 `ensurepip`；运行时仅用 Python 标准库。
+- macOS，Python **3.9+**，可使用 `venv` 和 `ensurepip`；基础运行时仅用标准库，
+  浏览器获取另选 Playwright 依赖。
 - key 在交互终端隐藏输入，直接写入 Apple Keychain；不使用 key 参数或环境变量。
 - 从当前目录向上寻找最近的工程配置，多个本机调用方共享同一工程状态。
 - 默认离线预览；只有明确添加 `--execute-live` 才允许本次有界请求联网。
@@ -26,9 +28,12 @@ Scopus API 权限由使用者自己的 key、订阅及机构访问条件决定�
 作者/索引关键词与模型关键词分开，参考文献条目与引用链接分开，不能保证补齐或完整。
 完整命令、存储、恢复及字段限制见 [DOI 补全使用说明](docs/DOI-ENRICHMENT.md)。
 
-另有 [出版社 HTML 独立试验脚本](docs/PUBLISHER-HTML-PROBE.md)，用于同批 DOI 的
-网页增量验证。它尚未进入 CLI 或 wheel；有独立预算，保留原始 HTML，不自动跳转或
-绕过站点规则。作者关键词与一般网页关键词、Scopus 索引词分别处理。
+0.6.0 已接入 [出版社 HTML 补全](docs/PUBLISHER-HTML.md)：`enrich import --source
+publisher_html` 离线导入保存证据；`enrich prepare --source publisher_html --backend
+static|browser` 显式冻结获取后端。文章 Keywords 补作者关键词空值，已有 API 非空值
+及来源保留。网页预算独立，原始 document、渲染 DOM、候选和版本均保留在调用工程。
+可选浏览器后端的真实拦截及后台流量边界仍须另行验收；本次发布仅完成离线验证。
+具体页面、域名和请求边界见 [实网验收方案](docs/PUBLISHER-HTML-LIVE-PLAN.md)。
 
 ## 安装一次
 
@@ -40,7 +45,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.5.0-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.6.0-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help
@@ -221,7 +226,7 @@ scopus-access install --wheel /absolute/path/to/new.whl
 English: A local macOS CLI for exact Scopus queries, bounded retrieval, shared
 per-project quota state and local exports. Bring your own API key. Install once,
 initialize each project, preview first, and use `--execute-live` for explicit
-bounded execution. Runtime dependencies: Python standard library only.
+bounded execution. Base runtime dependencies: Python standard library only; publisher browser rendering uses optional Playwright.
 
 
 ## 0.4.2：有效同窗口余额取小值并自动继续

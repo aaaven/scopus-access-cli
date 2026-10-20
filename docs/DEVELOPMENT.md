@@ -10,7 +10,8 @@ examples/               明确标为 synthetic/offline 的兼容示例
 docs/                   使用说明、架构及验证范围
 ```
 
-运行时只使用标准库。Python 3.9 是最低版本；Keychain 与文件锁实现面向 macOS。
+基础运行时只使用标准库；显式 browser extra 为可选 Playwright，不自动下载 Chromium。
+Python 3.9 是最低版本；Keychain 与文件锁实现面向 macOS。
 入口为 `scopus-access`，Python 包为 `scopus_access`，发行包名保留
 `uaeu-scopus-access-layer`。不要因通用命名改动旧凭据 service 或应用标识。
 
@@ -35,7 +36,7 @@ python3 -m venv .venv-build
 validation_root="$(mktemp -d)"
 python3 -m venv "$validation_root/tool"
 "$validation_root/tool/bin/python" -m pip install --no-index --no-deps --no-cache-dir \
-  "$PWD/dist/uaeu_scopus_access_layer-0.5.0-py3-none-any.whl"
+  "$PWD/dist/uaeu_scopus_access_layer-0.6.0-py3-none-any.whl"
 export SCOPUS_TEST_INSTALLED_PYTHON="$validation_root/tool/bin/python"
 export SCOPUS_TEST_INSTALLED_BIN="$validation_root/tool/bin"
 
