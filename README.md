@@ -1,8 +1,8 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.7.0**，
-默认交付 DOI 优先级代表主表、全 occurrence 映射及取舍日志；[版本说明](docs/RELEASE-0.7.0.md) 记录变更与验证边界。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.8.0**，
+默认交付 DOI 优先级代表主表、全 occurrence 映射及取舍日志；[版本说明](docs/RELEASE-0.8.0.md) 记录变更与验证边界。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
 工具按版本化 DOI 政策整理输出；选题、corpus 建立、筛选及文献计量分析由调用工程负责。
@@ -39,6 +39,19 @@ scopus-access deliver --input /path/to/saved-union.csv --input /path/to/saved-re
 政策选择不代表出版商核验或研究纳入。政策及输入变化会产生新版本，旧结果保留。
 细节见 [DOI 优先级交付](docs/DOI-PRIORITY.md)。
 
+## Zotero 同步（可选）
+
+新增 `dataset create` 与 `zotero configure/prepare/check/plan/push`。本地数据集保留
+版本、DOI 代表政策、所有 EID 及来源；可直接接收现有交付的 `publications.jsonl`、
+CSV 和补全结果。普通检索、补全、交付及导出均不会自动同步 Zotero。
+
+`prepare` 完全离线；`check` 和 `plan` 只读。写入须提供已审阅的冻结计划、
+`--max-items` 和 `--execute-live`；默认只补空值，保留手工编辑。未知结果先只读
+核对，旧计划不能重放。凭据按工程和目标隔离，保存在独立 Keychain service。
+
+详见 [Zotero 命令与恢复](docs/ZOTERO.md) 和 [0.8.0 验证记录](docs/RELEASE-0.8.0.md)。
+本次验收使用合成数据和模拟服务；真实账户权限、Keychain 提示和写入尚未验收。
+
 ## DOI 补全（可选）
 
 0.5.0 新增 `scopus-access enrich prepare|execute|resume|status|export`：从当前工程已保存
@@ -64,7 +77,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.7.0-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.8.0-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help

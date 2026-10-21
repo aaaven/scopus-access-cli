@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 — 2026-10-21
+
+- Add immutable project-bound bibliography datasets and optional Zotero configure/prepare/check/plan/push; accept existing delivery JSONL/CSV and enrichment wrappers while retaining EIDs and provenance.
+- Match exact DOI/local identities, fill only empty fields, hold conflicts, require a bounded one-use write plan and reconcile uncertain outcomes without automatic retries.
+- Isolate Zotero credentials, targets, locks, cooldowns and evidence from Scopus; keep raw data and detailed plans restricted.
+- Retain all 0.7.0 DOI delivery and 0.6.1 publisher task upgrade/recovery behavior. Validate offline with synthetic data, mock credentials/transports and socket guards; real Zotero acceptance remains pending.
+
 ## 0.7.0 — 2026-10-21
 
 - Default offline DOI-priority delivery after saved retrieval/export: immutable representative JSONL/CSV, every-occurrence mapping, decision log, counts, input/policy/code/output hashes.

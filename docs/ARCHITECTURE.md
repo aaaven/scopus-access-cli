@@ -1,6 +1,6 @@
 # Scopus Access Tool：通用本地 CLI 架构
 
-更新：2026-10-21。当前源码为 0.7.0。工程绑定、有界检索、离线导出及 DOI 优先级交付已接通；实际离线验收与安装状态见 [VALIDATION.md](VALIDATION.md)。
+更新：2026-10-21。当前源码为 0.8.0。工程绑定、有界检索、离线导出及 DOI 优先级交付已接通；实际离线验收与安装状态见 [VALIDATION.md](VALIDATION.md)。
 
 ## 产品范围
 
@@ -261,3 +261,19 @@ environments. Publisher live acceptance remains separate; current local installa
 manifest 最后发布；相同输入可幂等恢复，不同政策/元数据另产版本。
 书目内容、冲突细节和逐 occurrence 来源只进入 allowlisted restricted 输出。
 见 [DOI 优先级交付](DOI-PRIORITY.md)。
+
+## Optional Zotero synchronization (0.8.0)
+
+`dataset create` freezes a project-bound local bibliography; existing 0.7 delivery
+JSONL/CSV and DOI/publisher enrichment exports retain their EIDs and provenance.
+`zotero prepare` is offline; `check` and `plan` read only. `push` requires a
+reviewed one-use plan, positive item bound and explicit live execution. It fills
+empty fields, preserves manual values and holds identity/type conflicts.
+
+Zotero credentials use a separate project/target-bound Keychain reference.
+Restricted immutable bundles store content, mappings and predecessor-linked
+attempt/result/reconciliation evidence; project-wide locks and persisted cooldowns
+coordinate callers. No automatic retries or attachments are implemented.
+Scopus quota, history and completed retrievals are independent of sync results.
+Real account access and writes remain unverified. See [Zotero](ZOTERO.md) and
+[release validation](RELEASE-0.8.0.md).

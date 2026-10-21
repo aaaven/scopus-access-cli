@@ -147,6 +147,63 @@ with ExitStack() as stack:
                         'abstract_inverted_index':{'SYNTHETIC':[0],'ABSTRACT':[1]}}
                 return 200,{},json.dumps(payload).encode()
         stack.enter_context(mock.patch.object(enrichment,'_PublicTransport',PublicTransport))
+    if os.environ.get('SCOPUS_TEST_ZOTERO') == '1':
+        from scopus_access import zotero, zotero_local
+
+        class ZoteroTransport:
+            """In-process HTTP service double; only synthetic restricted state."""
+            def __init__(self):
+                assert os.environ.get('SCOPUS_TEST_LOCAL_ONLY') != '1', 'unexpected Zotero transport'
+
+            def request(self, method, path, headers, body):
+                assert headers['Zotero-API-Key'] == secret.decode()
+                assert headers['Zotero-API-Version'] == '3'
+                state_path = Path(os.environ['SCOPUS_TEST_ZOTERO_STATE'])
+                state = json.loads(state_path.read_text())
+                response_headers = {'Last-Modified-Version': str(state['version']),
+                                    'Total-Results': str(len(state['items'])), 'Zotero-API-Version': '3'}
+                parsed = urlsplit(path)
+                params = parse_qs(parsed.query)
+                if method == 'GET' and parsed.path == '/keys/current':
+                    value = {'userID': 42, 'access': {'groups': {'123': {'library': True, 'write': True}}}}
+                elif method == 'GET' and parsed.path == '/groups/123':
+                    value = {'id': 123, 'data': {'name': 'SYNTHETIC OPTIONAL GROUP'}}
+                elif method == 'GET' and parsed.path == '/items/new':
+                    value = {name: '' for name in ('title', 'extra', 'DOI', 'date', 'publicationTitle', 'abstractNote')}
+                    value.update(itemType=params['itemType'][0], creators=[], tags=[], collections=[], relations={})
+                elif method == 'GET' and parsed.path == '/groups/123/items':
+                    if params.get('format') == ['versions']:
+                        value = {row['key']: row['version'] for row in state['items']}
+                    else:
+                        start = int(params.get('start', ['0'])[0])
+                        value = state['items'][start:start + 100]
+                elif method == 'POST' and parsed.path == '/groups/123/items':
+                    assert headers['If-Unmodified-Since-Version'] == str(state['version'])
+                    submitted = json.loads(body)
+                    assert 1 <= len(submitted) <= 50
+                    state['version'] += 1
+                    value = {'successful': {}, 'unchanged': {}, 'failed': {}}
+                    for index, item in enumerate(submitted):
+                        item = dict(item, version=state['version'])
+                        row = {'key': item['key'], 'version': state['version'],
+                               'library': {'id': 123, 'type': 'group'}, 'data': item}
+                        state['items'] = [old for old in state['items'] if old['key'] != row['key']] + [row]
+                        value['successful'][str(index)] = row
+                    state_path.write_text(json.dumps(state))
+                    response_headers['Last-Modified-Version'] = str(state['version'])
+                    response_headers['Total-Results'] = str(len(state['items']))
+                    counter = os.environ.get('SCOPUS_TEST_ZOTERO_COUNTER')
+                    if counter:
+                        with open(counter, 'ab') as stream:
+                            stream.write(b'write\n')
+                else:
+                    raise AssertionError('unexpected synthetic Zotero request')
+                return 200, response_headers, json.dumps(value).encode()
+
+        stack.enter_context(mock.patch.object(zotero_local, 'MacOSKeychainWriter', Writer))
+        stack.enter_context(mock.patch.object(zotero_local, 'prompt_zotero_key', lambda: secrets.SecretValue(secret)))
+        stack.enter_context(mock.patch.object(zotero, 'MacOSKeychainSecretProvider', Provider))
+        stack.enter_context(mock.patch.object(zotero, 'HTTPSTransport', ZoteroTransport))
     executable = shutil.which(sys.argv[1])
     assert executable and Path(executable).resolve().parent == (Path(sys.prefix) / "bin").resolve()
     sys.argv = [executable] + sys.argv[2:]

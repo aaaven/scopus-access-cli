@@ -1,3 +1,14 @@
+# 0.8.0 optional Zotero release validation (2026-10-21)
+
+The current source retains all 0.7.0 delivery and publisher upgrade/recovery behavior,
+and adds optional project-bound Zotero synchronization. Acceptance uses synthetic
+records, mock credential stores/transports and pre-import socket/DNS guards.
+See [0.8.0 release evidence](RELEASE-0.8.0.md) for the current package, complete
+suite results and installation commands. Real Zotero account access, Keychain UI,
+write permissions and live writes/recovery remain unverified.
+
+The earlier version-specific records below are historical.
+
 # 验证范围
 
 ## 0.7.0 DOI 优先级交付（2026-10-21）

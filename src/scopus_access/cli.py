@@ -70,6 +70,41 @@ def _cmd_install(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_dataset(args: argparse.Namespace) -> int:
+    from .zotero_local import Context, create_dataset
+    fields = create_dataset(Context.from_project(), args.source)
+    status = fields.pop("status", "created")
+    _write_control(sys.stdout, _result("dataset", status, **fields))
+    return EXIT_OK
+
+
+def _cmd_zotero(args: argparse.Namespace) -> int:
+    from .zotero_local import Context, configure, prepare
+    context = Context.from_project()
+    action = args.zotero_action
+    if action == "configure":
+        fields = configure(context, args.library_type, args.library_id)
+    elif action == "prepare":
+        fields = prepare(context, args.dataset, selection=args.selection)
+    else:
+        from . import zotero
+        # Missing write consent fails before credential lookup or transport
+        # construction. Explicit check/plan authorize only read requests.
+        if action == "push" and not args.execute_live:
+            raise LiveCapabilityLocked("Zotero push requires --execute-live and --max-items.")
+        args.runner_entered = True
+        if action == "check":
+            fields = zotero.check(context)
+        elif action == "plan":
+            fields = zotero.plan(context, args.prepared)
+        else:
+            fields = zotero.push(context, args.plan, args.max_items,
+                                 execute_live=args.execute_live)
+    status = fields.pop("status", "ok")
+    _write_control(sys.stdout, _result("zotero", status, action=action, **fields))
+    return EXIT_FAILED if status in {"completed_with_failures", "uncertain", "partial"} else EXIT_OK
+
+
 def _cmd_search(args: argparse.Namespace) -> int:
     from .fetch import main as fetch_main
     from .project import discover_project_policy
@@ -941,6 +976,30 @@ def build_parser() -> argparse.ArgumentParser:
         description="Local Scopus CLI; project credentials, bounded retrieval, and local results",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    dataset = subparsers.add_parser("dataset", help="freeze a versioned local bibliography; zero network")
+    datasets = dataset.add_subparsers(dest="dataset_action", required=True)
+    create = datasets.add_parser("create", help="select DOI representatives from saved local records")
+    create.add_argument("--source", required=True, help="saved records JSON, JSONL, or CSV in this project's restricted directory")
+    create.set_defaults(handler=_cmd_dataset)
+
+    zotero = subparsers.add_parser("zotero", help="optional, explicit Zotero Web API synchronization")
+    zotero_commands = zotero.add_subparsers(dest="zotero_action", required=True)
+    configure = zotero_commands.add_parser("configure", help="bind an existing library and securely save a new key; zero network")
+    configure.add_argument("--library-type", choices=("group", "user"), required=True)
+    configure.add_argument("--library-id", required=True, help="positive numeric group ID or personal user ID")
+    prepare = zotero_commands.add_parser("prepare", help="freeze one local dataset version and optional record ID subset; zero network")
+    prepare.add_argument("--dataset", required=True)
+    prepare.add_argument("--selection", help="restricted local JSON array of selected stable record IDs")
+    zotero_commands.add_parser("check", help="read target and declared key permissions; no test write")
+    plan = zotero_commands.add_parser("plan", help="read a complete remote snapshot and freeze a reviewable fill-empty plan")
+    plan.add_argument("--prepared", required=True)
+    push = zotero_commands.add_parser("push", help="explicitly execute one frozen, bounded write plan")
+    push.add_argument("--plan", required=True)
+    push.add_argument("--max-items", type=int, required=True)
+    push.add_argument("--execute-live", action="store_true")
+    for command in zotero_commands.choices.values():
+        command.set_defaults(handler=_cmd_zotero)
 
     deliver = subparsers.add_parser("deliver", help="build an offline DOI-priority collection from explicit saved inputs")
     deliver.add_argument("--input", action="append", help="local CSV/JSONL/JSON records file; repeat across batches")

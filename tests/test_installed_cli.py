@@ -470,6 +470,70 @@ class InstalledCliTests(unittest.TestCase):
         self.assertEqual(code,0,rows);self.assertEqual(rows[0]['requests_attempted'],0)
         for raw in (saved.read_bytes(),):self.assertNotIn(b'SYNTHETIC_INSTALLED_CLI_CREDENTIAL',raw)
 
+    def test_installed_optional_zotero_snapshot_plan_and_explicit_mock_push(self):
+        self.initialize()
+        saved = self.root / 'restricted_metadata/scopus/synthetic-zotero.jsonl'
+        original = {'source_format': 'scopus_api_json', 'eid': 'SYNTHETIC-ZOTERO-EID',
+                    'stable_id': 'synthetic_record', 'doi': '10.1234/synthetic-zotero',
+                    'title': 'SYNTHETIC ZOTERO TITLE', 'subtype_description': 'Article',
+                    'creator': 'SYNTHETIC FIRST CREATOR', 'run_id': 'synthetic_run',
+                    'raw_page_ref': 'raw/synthetic.json', 'raw_page_sha256': 'a' * 64}
+        saved.write_text(json.dumps(original) + '\n')
+        state = self.root / 'restricted_metadata/synthetic-remote.json'
+        state.write_text(json.dumps({'version': 7, 'items': []}))
+        counter = self.base / 'synthetic-zotero-write-counter'
+        env = {'SCOPUS_TEST_ZOTERO': '1', 'SCOPUS_TEST_ZOTERO_STATE': str(state),
+               'SCOPUS_TEST_ZOTERO_COUNTER': str(counter)}
+        code, rows = self.invoke(self.root, 'zotero', 'configure', '--library-type', 'group',
+                                 '--library-id', '123', environment=env)
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]['network_calls'], 0)
+        code, rows = self.invoke(self.root, 'deliver', '--input', str(saved), environment=env)
+        self.assertEqual(code, 0, rows)
+        delivered = self.root / 'restricted_metadata/scopus' / rows[0]['publications_ref']
+        code, rows = self.invoke(self.root, 'dataset', 'create', '--source', str(delivered), environment=env)
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]['network_calls'], 0)
+        dataset = rows[0]['path']
+        child = self.root / 'nested/deep'
+        child.mkdir(parents=True)
+        code, rows = self.invoke(child, 'zotero', 'prepare', '--dataset', dataset, environment=env)
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]['network_calls'], 0)
+        prepared = rows[0]['path']
+        self.assertFalse(counter.exists())
+        code, rows = self.invoke(child, 'zotero', 'check', local=False, environment=env)
+        self.assertEqual(code, 0, rows)
+        self.assertFalse(rows[0]['write_test_performed'])
+        self.assertEqual(rows[0]['write_calls'], 0)
+        code, rows = self.invoke(child, 'zotero', 'plan', '--prepared', prepared, local=False, environment=env)
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]['counts'], {'create': 1})
+        plan = rows[0]['path']
+        self.assertFalse(counter.exists())
+        code, rows = self.invoke(child, 'zotero', 'push', '--plan', plan, '--max-items', '1', environment=env)
+        self.assertNotEqual(code, 0, rows)
+        self.assertFalse(counter.exists())
+        code, rows = self.invoke(child, 'zotero', 'push', '--plan', plan, '--max-items', '1',
+                                 '--execute-live', local=False, environment=env)
+        self.assertEqual(code, 0, rows)
+        self.assertEqual((rows[0]['successful'], rows[0]['write_calls']), (1, 1))
+        self.assertEqual(counter.read_bytes(), b'write\n')
+        code, rows = self.invoke(child, 'zotero', 'push', '--plan', plan, '--max-items', '1',
+                                 '--execute-live', environment=env)
+        self.assertNotEqual(code, 0, rows)
+        self.assertEqual(counter.read_bytes(), b'write\n')
+        code, rows = self.invoke(child, 'zotero', 'plan', '--prepared', prepared, local=False, environment=env)
+        self.assertEqual(code, 0, rows)
+        self.assertEqual(rows[0]['counts'], {'skip': 1})
+        self.assertEqual(counter.read_bytes(), b'write\n')
+        self.assertEqual(json.loads(saved.read_text()), original)
+        code, rows = self.invoke(child, 'usage')
+        self.assertEqual((code, rows[0]['requests_attempted']), (0, 0))
+        for path in self.root.rglob('*'):
+            if path.is_file():
+                self.assertNotIn(b'SYNTHETIC_INSTALLED_CLI_CREDENTIAL', path.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()
