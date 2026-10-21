@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0 — 2026-10-21
+
+- Default offline DOI-priority delivery after saved retrieval/export: immutable representative JSONL/CSV, every-occurrence mapping, decision log, counts, input/policy/code/output hashes.
+- Consolidate EID occurrences across selected pages/batches, then select by normalized DOI, document-type priority, metadata completeness and stable EID. Keep conflicts nonblocking and preserve source fields without cross-record filling.
+- Add explicit offline `deliver` for multiple run-info or saved CSV/JSONL/JSON inputs, optional versioned policy, and enriched wrappers. Keep raw totals, pagination, receipts, budgets, quota and evidence unchanged.
+- Retain 0.6.1 publisher task upgrade/reuse behavior and runtime version logs.
+
+## 0.6.1 — 2026-10-20
+
+- Remove frozen source-hash execution/reuse gates for publisher static/browser tasks; preserve original task files, evidence and cumulative request budgets, and append actual CLI/parser versions at runtime.
+
+
 ## 0.6.0 — 2026-10-20
 
 - Integrate publisher HTML into enrich with an explicit source and static/browser backend, plus fully offline saved-browser bundle import and pinned status/export.

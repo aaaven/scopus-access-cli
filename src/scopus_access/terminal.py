@@ -109,6 +109,10 @@ def human_message(record):
         return "本次任务未获配额准入，未发送请求；请检查本地用量和停止原因。"
     if command == "run-status":
         return "本地运行状态已读取：累计尝试 %s 次；未联网、未读取密钥。" % _count(record.get("requests_attempted"))
+    if command in {"deliver", "export-records"} and status == "completed" and "representatives_count" in record:
+        return "本地交付完成：%s 个 occurrence，%s 个唯一 EID，%s 条代表，%s 条次记录；未联网。位置见 JSON 的 delivery_ref。" % (
+            _count(record.get("raw_occurrences_count")), _count(record.get("unique_eid_count")),
+            _count(record.get("representatives_count")), _count(record.get("secondary_records_count")))
     if command == "export-records" and status == "completed":
         return "本地导出完成：%s 条记录；未联网、未读取密钥。结果位置见 JSON 的 records_ref。" % _count(record.get("records_count"))
     if command == "usage":

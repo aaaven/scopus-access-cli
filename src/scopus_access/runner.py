@@ -628,6 +628,20 @@ class GovernedRunner:
             records_pages=records.page_count,
         )
         self._artifacts.write_receipt(receipt)
+        # Derived output is separate from immutable execution evidence and must
+        # never change the raw occurrence count, reservation or resume boundary.
+        delivery_fields = {"delivery_status": "failed"}
+        try:
+            from .delivery import export_run_delivery
+            derived = export_run_delivery(self._artifacts, auth.run_id, auth.api_name)
+            delivery_fields = {name: derived[name] for name in (
+                "delivery_ref", "delivery_sha256", "raw_occurrences_count", "unique_eid_count",
+                "representatives_count", "secondary_records_count")}
+            delivery_fields["delivery_status"] = "completed"
+        except Exception:
+            # An offline export can be retried from saved pages. Do not alter
+            # receipt/accounting or retransmit because a derived write failed.
+            pass
         event_fields = {
             "reservation_id": receipt.reservation_id,
             "api_name": receipt.api_name,
@@ -641,6 +655,7 @@ class GovernedRunner:
                                   "budget_exhausted" if receipt.stop_reason == "request_boundary_reached" else "unfinished"),
             "checkpoint_ref": receipt.checkpoint_ref,
             "receipt_ref": receipt.receipt_ref,
+            **delivery_fields,
         }
         if manifest_ref is not None and manifest_sha is not None:
             event_fields["artifact_manifest_ref"] = manifest_ref

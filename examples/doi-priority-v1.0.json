@@ -1,0 +1,23 @@
+{
+  "version": "doi-priority-v1.0",
+  "adopted_date": "2026-10-20",
+  "timezone": "Asia/Dubai",
+  "basis": "User preference: Article > Book Chapter > Conference Paper > Preprint",
+  "priority": ["article", "bookchapter", "conferencepaper", "preprint"],
+  "aliases": {
+    "ar": "article", "journalarticle": "article",
+    "ch": "bookchapter", "chapter": "bookchapter",
+    "cp": "conferencepaper", "proceedingspaper": "conferencepaper", "proceedingpaper": "conferencepaper",
+    "postedcontent": "preprint", "submittedversion": "preprint"
+  },
+  "unranked_type": "after_ranked_types; singleton records retained",
+  "tie_break": ["nonempty_bibliographic_fields_descending", "EID_ascending"],
+  "completeness_fields": [
+    "Title", "Authors", "Creator (may be first author)", "Source title", "Year",
+    "Abstract", "Author Keywords", "Index Keywords", "References", "Cover Date"
+  ],
+  "grouping": "valid_normalized_DOI; otherwise individual_EID",
+  "field_merge": "retain_representative_fields_without_cross_record_filling",
+  "identity_status": "policy_selected; not_publisher_verified",
+  "eligibility": "unchanged; type priority applies only within the same DOI group"
+}

@@ -1,11 +1,11 @@
 # Scopus Access CLI
 
 一个通用的 macOS 本地命令行工具：使用者提供自己的 Scopus API key，工具负责精确
-查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.6.1**，
-支持升级后沿用出版社任务及原预算；[版本说明](docs/RELEASE-0.6.1.md) 记录变更与验证边界。
+查询、有界分页、配额记录、恢复与本地 JSON/JSONL 导出。当前版本 **0.7.0**，
+默认交付 DOI 优先级代表主表、全 occurrence 映射及取舍日志；[版本说明](docs/RELEASE-0.7.0.md) 记录变更与验证边界。
 
 **一台 Mac 安装一次；每个研究工程分别初始化自己的 key 绑定、账本和结果。**
-工具不负责选题、corpus 建立、筛选、科学去重或文献计量分析。
+工具按版本化 DOI 政策整理输出；选题、corpus 建立、筛选及文献计量分析由调用工程负责。
 
 ## 功能与平台
 
@@ -19,6 +19,25 @@
 
 这是本地 CLI，不需要 Codex skill、服务器、组织身份流程或外部通知服务。
 Scopus API 权限由使用者自己的 key、订阅及机构访问条件决定。
+
+## 默认 DOI 优先级交付
+
+Search/check/details 运行结束和 `export` 默认生成独立的版本化派生结果：代表主表
+（JSONL/CSV）、所有 occurrence 到代表的映射、非阻断冲突/取舍日志和摘要计数。
+先归并相同 EID，再按有效规范化 DOI 选代表，顺序为 Article > Book Chapter >
+Conference Paper > Preprint；同级按十个书目字段完整度，再按 EID 升序。
+缺失或无效 DOI 保留，不同 DOI 不因相同题名合并，不跨记录填补代表字段。
+
+跨批次须显式指定整个交付集合；工具不会自动扫描别的任务：
+
+```sh
+scopus-access deliver --run-info /path/to/batch-a/run-info.json --run-info /path/to/batch-b/run-info.json
+scopus-access deliver --input /path/to/saved-union.csv --input /path/to/saved-records.jsonl
+```
+
+原始响应、任务、receipt、Scopus 命中数、分页完整性、预算和累计消耗不因归并改变。
+政策选择不代表出版商核验或研究纳入。政策及输入变化会产生新版本，旧结果保留。
+细节见 [DOI 优先级交付](docs/DOI-PRIORITY.md)。
 
 ## DOI 补全（可选）
 
@@ -45,7 +64,7 @@ cd /path/to/scopus-access-cli
 python3 -m venv .venv-build
 .venv-build/bin/python -m pip install setuptools wheel
 .venv-build/bin/python -m pip wheel . --no-index --no-deps --no-build-isolation --wheel-dir dist
-.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.6.1-py3-none-any.whl"
+.venv-build/bin/python scripts/install_cli.py --wheel "$PWD/dist/uaeu_scopus_access_layer-0.7.0-py3-none-any.whl"
 source ~/.zprofile
 command -v scopus-access
 scopus-access --help
@@ -182,8 +201,9 @@ Keychain 读写统一使用 Security.framework。`SECRET_UNAVAILABLE` / `secret_
 | `search --query-file ...` | 有界检索预览 | 否 |
 | `execute --run-info ...` | 检查或明确执行冻结预览 | 否 |
 | `status --run-info ...` | 查看本地运行状态 | 否 |
-| `export --run-info ...` | 从已保存 raw 页导出 JSONL | 否 |
+| `export --run-info ...` | 从 raw 页导出 occurrence 和 DOI 代表交付 | 否 |
 | `resume --run-info ...` | 检查或继续原运行 | 否 |
+| `deliver --input ...` | 离线合并显式选定的多个批次 | 否 |
 | `usage` | 查看本工程派生用量视图 | 否 |
 | `install --wheel ...` | 离线安装/升级固定工具环境 | 否 |
 
@@ -191,7 +211,7 @@ Search 默认 STANDARD、offset、1 请求、每页 200 条；允许显式 1–1
 达到明确边界会保存结果并报告部分完成，不自动按年份拆分或扩展预算。
 STANDARD 不保证摘要、完整作者、关键词或参考文献；导出保留实际字段与缺失值。
 
-当前没有专用换 key 命令、自动 USAGE.md、CSV/RIS/BibTeX 导出、Windows/Linux
+当前没有专用换 key 命令、自动 USAGE.md、RIS/BibTeX 导出、Windows/Linux
 凭据适配、多 Mac 协作或远程取回。`init` 永不静默更换 key。Abstract Retrieval 等
 底层兼容接口不属于简化 Search 工作流。
 

@@ -781,6 +781,8 @@ def _cmd_export_records(args: argparse.Namespace) -> int:
     if not store.load_response_records(run_id):
         raise ValidationError("No raw pages exist for this execution.", code="NO_RAW_PAGES")
     records = store.export_records(run_id, args.api_name)
+    from .delivery import export_delivery
+    delivery = export_delivery(store, [store.root / records.ref])
     _write_control(sys.stdout, _result(
         "export-records", "completed", parent_run_id=parent_run_id,
         run_id=run_id, project_id=manifest.project_id, task_id=manifest.task_id,
@@ -788,8 +790,49 @@ def _cmd_export_records(args: argparse.Namespace) -> int:
         records_ref=records.ref, records_sha256=records.sha256,
         records_count=records.record_count, records_pages=records.page_count,
         result_set_exhausted=bool(store.load_checkpoint(run_id) and store.load_checkpoint(run_id).complete),
+        **delivery,
         network_calls=0, secret_reads=0,
     ))
+    return EXIT_OK
+
+
+def _cmd_deliver(args):
+    """Explicit collection export, using only local project policy and files."""
+    from .delivery import export_delivery
+    from .project import discover_project_policy, require_project_context
+    from .fetch import _read_run_info
+    path = args.policy or discover_project_policy()
+    if path is None:
+        raise ValidationError("Run scopus-access init in this project first.",
+                              code="PROJECT_NOT_INITIALIZED")
+    policy = load_policy(str(path))
+    require_project_context(policy)
+    if len(policy.project_api_key_aliases) != 1:
+        raise ValidationError("A delivery requires exactly one consuming project.")
+    project = next(iter(policy.project_api_key_aliases))
+    roots = policy.output_roots_for(project)
+    output = policy.project_binding.output if policy.project_binding else (
+        roots[0] if roots[0].name == "restricted_metadata" else roots[0] / "restricted_metadata")
+    store = RestrictedArtifactStore(output, allowed_roots=roots)
+    inputs = list(args.input or [])
+    if not 1 <= len(inputs) + len(args.run_info or []) <= 128:
+        raise ValidationError("Select 1-128 explicit delivery inputs.")
+    for source in args.run_info or []:
+        info = _read_run_info(source)
+        source_policy = load_policy(info["policy_path"])
+        manifest = load_task_manifest(info["manifest_path"], source_policy)
+        if (manifest.project_id != project or manifest.project_output_dir != store.root
+                or source_policy.project_binding != policy.project_binding):
+            raise ValidationError("Delivery runs must belong to the current consuming project.")
+        run = execution_run_id(info["project_id"], info["task_id"], info["release_id"],
+                               info["parent_run_id"], info["api_name"])
+        if not store.load_response_records(run):
+            raise ValidationError("No raw pages exist for this execution.", code="NO_RAW_PAGES")
+        records = store.export_records(run, info["api_name"])
+        inputs.append(store.root / records.ref)
+    result = export_delivery(store, inputs, policy_path=args.doi_policy)
+    _write_control(sys.stdout, _result("deliver", "completed", **result,
+                                      network_calls=0, secret_reads=0))
     return EXIT_OK
 
 
@@ -898,6 +941,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Local Scopus CLI; project credentials, bounded retrieval, and local results",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    deliver = subparsers.add_parser("deliver", help="build an offline DOI-priority collection from explicit saved inputs")
+    deliver.add_argument("--input", action="append", help="local CSV/JSONL/JSON records file; repeat across batches")
+    deliver.add_argument("--run-info", action="append", help="saved execution run-info in this project; repeat across runs")
+    deliver.add_argument("--policy", help="explicit compatible project policy")
+    deliver.add_argument("--doi-policy", help="versioned DOI priority JSON; default doi-priority-v1.0")
+    deliver.set_defaults(handler=_cmd_deliver)
 
     from .enrich_cli import add_arguments as enrichment_arguments, run_cli as enrichment_cli
     enrichment = subparsers.add_parser("enrich", help="bounded DOI or publisher HTML enrichment of saved records")

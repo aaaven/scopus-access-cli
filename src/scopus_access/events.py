@@ -124,6 +124,8 @@ _EVENT_OPTIONAL = {
         "result_set_status",
         "artifact_manifest_ref",
         "artifact_manifest_sha256",
+        "delivery_status", "delivery_ref", "delivery_sha256",
+        "raw_occurrences_count", "unique_eid_count", "representatives_count", "secondary_records_count",
     },
 }
 
@@ -145,6 +147,7 @@ _FORBIDDEN_FIELD_TOKENS = {
 }
 
 _INTEGER_FIELDS = {"observed_epoch", "service_max_count",
+    "raw_occurrences_count", "unique_eid_count", "representatives_count", "secondary_records_count",
     "max_requests",
     "retry_allowance",
     "page_size",
@@ -163,12 +166,13 @@ _INTEGER_FIELDS = {"observed_epoch", "service_max_count",
     "retries_used",
 }
 
-_HASH_FIELDS = {"error_response_sha256","response_sha256", "artifact_manifest_sha256"}
+_HASH_FIELDS = {"error_response_sha256","response_sha256", "artifact_manifest_sha256", "delivery_sha256"}
 _REF_FIELDS = {
     "artifact_ref",
     "checkpoint_ref",
     "receipt_ref",
     "artifact_manifest_ref",
+    "delivery_ref",
 }
 _ATOM_FIELDS = {
     "run_id",
@@ -186,6 +190,7 @@ _ATOM_FIELDS = {
     "reason",
     "status",
     "stop_reason",
+    "delivery_status",
 }
 
 _ATOM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:\-]{0,127}$")
@@ -197,6 +202,7 @@ _HEADER_LIKE_RE = re.compile(
     r"(?i)(?:x-els-apikey|bearer\s+|authorization\s*:|cookie\s*:|api[_-]?key)"
 )
 _ENUM_FIELDS = {
+    "delivery_status": {"completed", "failed"},
     "limit_status": HEADER_STATES, "remaining_status": HEADER_STATES, "reset_status": HEADER_STATES,
     "telemetry_reason": HEADER_REASONS,
     "error_category": {"unclassified", "query_syntax", "invalid_parameter", "access"},

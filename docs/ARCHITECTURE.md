@@ -1,8 +1,6 @@
 # Scopus Access Tool：通用本地 CLI 架构
 
-更新：2026-10-20。已发布/固定安装为 0.5.0，当前开发源码为 0.6.0.dev0。初始化、工程识别、共享本机状态及
-check/search/execute/status/export/resume/usage 已接通并完成离线验证。实际用法见
-[USAGE.md](USAGE.md)，测试记录见 [VALIDATION.md](VALIDATION.md)。
+更新：2026-10-21。当前源码为 0.7.0。工程绑定、有界检索、离线导出及 DOI 优先级交付已接通；实际离线验收与安装状态见 [VALIDATION.md](VALIDATION.md)。
 
 ## 产品范围
 
@@ -14,7 +12,7 @@ key；终端、脚本和 Codex 调用相同命令。维护者不提供公共 key
 凭据、不维护中央服务。API、view 和字段的实际可用性由使用者的访问权限决定。
 
 只负责调用方给定的查询或标识符、有界检索、额度计数、恢复和本地导出。
-研究主题、corpus 建立、筛选、科学去重和文献计量分析由调用工程处理。
+DOI 输出整理使用版本化政策；研究主题、corpus 建立、筛选和文献计量分析由调用工程处理。
 
 明确不做：Codex skill、plugin、SRC/PI 通知及反馈、人员身份和组织审批流程、
 多 Mac 调用、远程结果取回、SSH/SFTP、HTTP/MCP 服务及中央任务队列。
@@ -231,7 +229,7 @@ The enrich command family is independent from Scopus retrieval. It consumes proj
 
 Raw provider bodies, immutable snapshots and versioned mixed-source exports remain under the project's allowlisted restricted root. Missing fields alone may be filled after DOI/title/version checks; presence, cross-source agreement and publisher-verified completeness remain distinct. Native Scopus fields and external model keywords/citation links cannot be conflated. See [DOI enrichment](DOI-ENRICHMENT.md) for the exact supported semantics and recovery limits.
 
-## Publisher HTML integration (development source)
+## Publisher HTML integration (0.6.0 onward)
 
 The enrich router accepts an explicit publisher_html source. Saved browser bundles import entirely offline;
 static and browser acquisition are separately frozen choices and never fall back automatically. Existing
@@ -248,4 +246,18 @@ settings do not certify whole-process egress coverage. Real browser acceptance i
 
 See [publisher HTML usage](PUBLISHER-HTML.md), [offline validation](VALIDATION.md) and the
 [bounded live proposal](PUBLISHER-HTML-LIVE-PLAN.md). The development wheel is tested in disposable
-environments; the fixed user installation remains 0.5.0 until a separate release decision.
+environments. Publisher live acceptance remains separate; current local installation and release validation are recorded in [VALIDATION.md](VALIDATION.md).
+
+
+## DOI 代表交付层（0.7.0）
+
+原始 occurrence 导出仍使用旧路径、计数及 receipt 契约。运行 receipt 持久化后，
+离线生成 `deliveries/<generation>/`；仅计数、固定引用和哈希进入 run_completed。
+派生写入失败报告 delivery_status=failed，原运行证据、配额及恢复边界不改变；
+可用 export 从已保存页重建。显式 deliver 聚合多个选定运行或 CSV/JSONL 输入，
+不扫描其他批次，不读取 key，也不打开或更改控制账本。
+
+输入字节、政策快照、实现代码及 CLI 版本固定 generation。派生文件不可覆盖，
+manifest 最后发布；相同输入可幂等恢复，不同政策/元数据另产版本。
+书目内容、冲突细节和逐 occurrence 来源只进入 allowlisted restricted 输出。
+见 [DOI 优先级交付](DOI-PRIORITY.md)。

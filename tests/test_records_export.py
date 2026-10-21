@@ -50,6 +50,24 @@ def _search(entries, next_cursor=None):
 
 
 class RecordsExportIntegrationTests(unittest.TestCase):
+    def test_derived_failure_keeps_completed_receipt_and_attempt_charge(self):
+        self.fixture._seed_quota(self.ledger, "scopus_search")
+        manifest, permit = self.fixture._manifest("survey_run", "-derived-failure")
+        capability, _ = self._admit(manifest, permit, "derived-failure", "scopus_search")
+        wire = _Wire([_search([{"eid": "1", "prism:doi": "10.1234/synthetic"}])])
+        runner, _ = self._runner(manifest, permit, capability, wire)
+        initial_attempts = sum(r["record_kind"] == "ATTEMPT" for r in self.ledger.rows("request_usage"))
+        with mock.patch("scopus_access.delivery.export_run_delivery", side_effect=TypeError(TITLE)):
+            receipt = runner.run(capability)
+        self.assertEqual((receipt.status, receipt.requests_attempted, receipt.records_count), ("completed", 1, 1))
+        self.assertEqual(wire.calls, 1)
+        stored = self.store.load_receipt(capability.run_id)
+        self.assertEqual(stored, receipt)
+        last = json.loads(self.events.getvalue().splitlines()[-1])
+        self.assertEqual(last["delivery_status"], "failed")
+        self.assertNotIn(TITLE, self.events.getvalue())
+        self.assertEqual(sum(r["record_kind"] == "ATTEMPT" for r in self.ledger.rows("request_usage")), initial_attempts + 1)
+
     def setUp(self):
         self.fixture = fixtures.IntegrationTests()
         self.fixture.setUp()
@@ -97,6 +115,13 @@ class RecordsExportIntegrationTests(unittest.TestCase):
         control += (self.fixture.output / receipt.artifact_manifest_ref).read_text()
         for sentinel in (TITLE, ABSTRACT, "offline-mock-credential"):
             self.assertNotIn(sentinel, control)
+        final = [json.loads(line) for line in self.events.getvalue().splitlines()
+                 if json.loads(line).get("event") == "run_completed"
+                 and json.loads(line).get("run_id") == receipt.run_id][-1]
+        self.assertEqual(final["delivery_status"], "completed")
+        self.assertEqual(final["raw_occurrences_count"], receipt.records_count)
+        manifest = self.fixture.output / final["delivery_ref"]
+        self.assertEqual(hashlib.sha256(manifest.read_bytes()).hexdigest(), final["delivery_sha256"])
         return rows, encoded
 
     def test_real_runner_two_api_records_missing_fields_and_receipt_isolation(self):

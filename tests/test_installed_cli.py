@@ -59,6 +59,55 @@ class InstalledCliTests(unittest.TestCase):
         path.write_text("SYNTHETIC_INSTALLED_QUERY")
         return path
 
+    def test_installed_delivery_combines_batches_offline_and_preserves_project_state(self):
+        self.initialize()
+        source = self.root / "restricted_metadata"
+        first = source / "batch-a.jsonl"
+        second = source / "batch-b.jsonl"
+        records = [
+            {"eid": "2", "doi": "10.1234/synthetic", "subtype": "ch", "title": "SYNTHETIC_PRIVATE_TITLE"},
+            {"eid": "1", "doi": "https://doi.org/10.1234/SYNTHETIC", "subtype": "ar"},
+        ]
+        first.write_text(json.dumps(records[0]) + "\n")
+        second.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+        protected = {str(p): p.read_bytes() for p in (self.root / ".scopus-access").rglob("*") if p.is_file()}
+        child = self.root / "subdirectory"
+        child.mkdir()
+        code, rows = self.invoke(child, "deliver", "--input", str(first), "--input", str(second))
+        self.assertEqual(code, 0, rows)
+        result = rows[-1]
+        self.assertEqual((result["raw_occurrences_count"], result["unique_eid_count"],
+                          result["representatives_count"], result["secondary_records_count"]), (3, 2, 1, 1))
+        self.assertEqual((result["network_calls"], result["secret_reads"]), (0, 0))
+        self.assertNotIn("SYNTHETIC_PRIVATE_TITLE", json.dumps(rows))
+        self.assertNotIn("10.1234", json.dumps(rows))
+        self.assertTrue((source / "scopus" / result["delivery_ref"]).is_file())
+        code, again = self.invoke(child, "deliver", "--input", str(second), "--input", str(first))
+        self.assertEqual(code, 0, again)
+        self.assertEqual(again[-1]["delivery_ref"], result["delivery_ref"])
+        self.assertEqual(protected, {str(p): p.read_bytes() for p in (self.root / ".scopus-access").rglob("*") if p.is_file()})
+
+    def test_installed_default_delivery_and_run_info_rebuild_are_offline(self):
+        self.initialize()
+        query = self.query()
+        code, rows = self.invoke(self.root, "check", "--query-file", str(query), "--execute-live", local=False)
+        self.assertEqual(code, 0, rows)
+        info = rows[0]["run_info_path"]
+        completed = next(row for row in rows if row.get("event") == "run_completed")
+        self.assertEqual((completed["delivery_status"], completed["raw_occurrences_count"],
+                          completed["representatives_count"]), ("completed", 1, 1))
+        protected = {str(p): p.read_bytes() for p in (self.root / ".scopus-access").rglob("*") if p.is_file()}
+        receipts = {str(p): p.read_bytes() for p in (self.root / "restricted_metadata/scopus/receipts").glob("*")}
+        code, exported = self.invoke(self.root, "export", "--run-info", info)
+        self.assertEqual(code, 0, exported)
+        self.assertEqual(exported[-1]["records_count"], 1)
+        self.assertEqual(exported[-1]["delivery_ref"], completed["delivery_ref"])
+        code, delivered = self.invoke(self.root, "deliver", "--run-info", info)
+        self.assertEqual(code, 0, delivered)
+        self.assertEqual(delivered[-1]["delivery_ref"], completed["delivery_ref"])
+        self.assertEqual(protected, {str(p): p.read_bytes() for p in (self.root / ".scopus-access").rglob("*") if p.is_file()})
+        self.assertEqual(receipts, {str(p): p.read_bytes() for p in (self.root / "restricted_metadata/scopus/receipts").glob("*")})
+
     def test_installed_agent_init_handoff_returns_result_without_key_or_shell_copy(self):
         counter = self.base / "terminal-windows"
         environment = {"SCOPUS_TEST_TERMINAL_HANDOFF": "success", "SCOPUS_TEST_TERMINAL_COUNTER": str(counter)}
